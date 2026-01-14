@@ -1,4 +1,5 @@
 # Suno Song Remaster
+<img width="1046" height="797" alt="Screenshot 2026-01-14 003206" src="https://github.com/user-attachments/assets/3e06bc4a-9bda-4340-9497-22b894678ddd" />
 
 A desktop app for mastering AI-generated music (Suno, Udio, etc.) to streaming-ready quality.
 
