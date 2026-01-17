@@ -7,6 +7,7 @@ import { toBlobURL } from '@ffmpeg/util';
 let ffmpeg = null;
 let ffmpegLoaded = false;
 let ffmpegLoading = false;
+let currentProgressCallback = null; // Global callback for FFmpeg progress
 
 async function initFFmpeg(onProgress) {
   if (ffmpegLoaded) return;
@@ -26,11 +27,12 @@ async function initFFmpeg(onProgress) {
 
     ffmpeg = new FFmpeg();
 
-    // Progress callback - updates both export progress and loading modal
+    // Progress callback - updates export progress and/or loading modal
     ffmpeg.on('progress', ({ progress }) => {
-      // Update export progress if callback provided
-      if (onProgress) {
-        onProgress(10 + Math.round(progress * 90));
+      // Update export progress using global callback
+      if (currentProgressCallback) {
+        // Scale to 10-90% range (10% for setup, 90% for writing file)
+        currentProgressCallback(10 + Math.round(progress * 80));
       }
       // Update loading modal if visible (during file load normalization)
       const modal = document.getElementById('loadingModal');
@@ -203,6 +205,9 @@ function buildFilterChain(settings) {
 }
 
 async function processAudioWithFFmpeg(inputData, inputName, outputName, settings, onProgress) {
+  // Set global progress callback for FFmpeg events
+  currentProgressCallback = onProgress;
+
   if (!ffmpegLoaded) {
     if (onProgress) onProgress(5);
     await initFFmpeg(onProgress);
@@ -253,6 +258,9 @@ async function processAudioWithFFmpeg(inputData, inputName, outputName, settings
   // Cleanup
   await ffmpeg.deleteFile(inputName);
   await ffmpeg.deleteFile(outputName);
+
+  // Clear progress callback
+  currentProgressCallback = null;
 
   return outputData;
 }
