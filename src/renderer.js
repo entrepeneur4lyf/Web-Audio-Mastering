@@ -682,6 +682,14 @@ function updateInputGain() {
 // ============================================================================
 
 function initFaders() {
+  // Destroy old faders before creating new ones (prevents memory leaks on re-init)
+  Object.keys(faders).forEach(key => {
+    if (faders[key] && typeof faders[key].destroy === 'function') {
+      faders[key].destroy();
+    }
+    faders[key] = null;
+  });
+
   // Input Gain Fader
   faders.inputGain = new Fader('#inputGainFader', {
     min: -12,
@@ -1589,12 +1597,23 @@ async function loadAudioFile(filePath) {
     }
     fileState.originalBuffer = decodedBuffer;
 
-    showLoadingModal('Measuring loudness...', 40);
+    // Show measuring phase with intermediate progress updates
+    showLoadingModal('Measuring loudness...', 35);
+
+    // Small delay to allow UI to update before CPU-intensive LUFS measurement
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    showLoadingModal('Analyzing audio levels...', 50);
 
     // Normalize to -14 LUFS using pure JavaScript
     const normalizedBuffer = normalizeToLUFS(decodedBuffer, -14);
 
-    showLoadingModal('Preparing audio...', 80);
+    showLoadingModal('Applying normalization...', 70);
+
+    // Small delay for UI feedback
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    showLoadingModal('Preparing audio...', 85);
 
     // Store as the main buffer (normalized)
     audioNodes.buffer = normalizedBuffer;
