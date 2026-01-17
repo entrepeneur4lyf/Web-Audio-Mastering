@@ -266,6 +266,9 @@ const audioNodes = {
   source: null,
   buffer: null,
   analyser: null,
+  analyserL: null,   // Left channel analyser for meter
+  analyserR: null,   // Right channel analyser for meter
+  meterSplitter: null,
   gain: null,
   // Effects chain
   highpass: null,
@@ -279,7 +282,14 @@ const audioNodes = {
   eqLowMid: null,
   eqMid: null,
   eqHighMid: null,
-  eqHigh: null
+  eqHigh: null,
+  // Stereo width (M/S processing)
+  stereoSplitter: null,
+  stereoMerger: null,
+  midGainL: null,
+  midGainR: null,
+  sideGainL: null,
+  sideGainR: null
 };
 
 const fileState = {
@@ -394,9 +404,14 @@ function initAudioContext() {
 function createAudioChain() {
   const ctx = initAudioContext();
 
-  // Create analyser for visualization
+  // Create analysers for visualization (stereo metering)
   audioNodes.analyser = ctx.createAnalyser();
   audioNodes.analyser.fftSize = 2048;
+  audioNodes.analyserL = ctx.createAnalyser();
+  audioNodes.analyserL.fftSize = 2048;
+  audioNodes.analyserR = ctx.createAnalyser();
+  audioNodes.analyserR.fftSize = 2048;
+  audioNodes.meterSplitter = ctx.createChannelSplitter(2);
 
   // Create nodes
   audioNodes.gain = ctx.createGain();
@@ -413,6 +428,26 @@ function createAudioChain() {
   audioNodes.eqMid = ctx.createBiquadFilter();
   audioNodes.eqHighMid = ctx.createBiquadFilter();
   audioNodes.eqHigh = ctx.createBiquadFilter();
+
+  // Stereo width M/S processing nodes
+  // M/S encoding: Mid = (L+R)/2, Side = (L-R)/2
+  // Output: L' = Mid + Side*width, R' = Mid - Side*width
+  audioNodes.stereoSplitter = ctx.createChannelSplitter(2);
+  audioNodes.stereoMerger = ctx.createChannelMerger(2);
+  // For left output: midGainL adds mid, sideGainL adds side
+  audioNodes.midGainL = ctx.createGain();
+  audioNodes.midGainR = ctx.createGain();
+  audioNodes.sideGainL = ctx.createGain();
+  audioNodes.sideGainR = ctx.createGain();
+  // We need additional gains for the M/S matrix
+  audioNodes.lToMid = ctx.createGain();
+  audioNodes.rToMid = ctx.createGain();
+  audioNodes.lToSide = ctx.createGain();
+  audioNodes.rToSide = ctx.createGain();
+  audioNodes.midToL = ctx.createGain();
+  audioNodes.midToR = ctx.createGain();
+  audioNodes.sideToL = ctx.createGain();
+  audioNodes.sideToR = ctx.createGain();
 
   // Configure EQ bands
   audioNodes.eqLow.type = 'lowshelf';
@@ -470,6 +505,7 @@ function createAudioChain() {
   audioNodes.limiter.release.value = 0.05;
 
   updateAudioChain();
+  updateStereoWidth();
   updateEQ();
 }
 
@@ -508,9 +544,36 @@ function updateAudioChain() {
   }
 }
 
+function updateStereoWidth() {
+  if (!audioNodes.stereoSplitter) return;
+
+  const width = playerState.isBypassed ? 1.0 : parseInt(stereoWidthSlider.value) / 100;
+
+  // M/S Matrix coefficients
+  // Mid = (L + R) * 0.5
+  // Side = (L - R) * 0.5
+  // L' = Mid + Side * width = L*0.5 + R*0.5 + (L*0.5 - R*0.5)*width
+  //    = L*(0.5 + 0.5*width) + R*(0.5 - 0.5*width)
+  // R' = Mid - Side * width = L*0.5 + R*0.5 - (L*0.5 - R*0.5)*width
+  //    = L*(0.5 - 0.5*width) + R*(0.5 + 0.5*width)
+
+  const midCoef = 0.5;
+  const sideCoef = 0.5 * width;
+
+  // L' = L*(midCoef + sideCoef) + R*(midCoef - sideCoef)
+  // R' = L*(midCoef - sideCoef) + R*(midCoef + sideCoef)
+  audioNodes.lToMid.gain.value = midCoef + sideCoef;  // L contribution to L'
+  audioNodes.rToMid.gain.value = midCoef - sideCoef;  // R contribution to L'
+  audioNodes.lToSide.gain.value = midCoef - sideCoef; // L contribution to R'
+  audioNodes.rToSide.gain.value = midCoef + sideCoef; // R contribution to R'
+}
+
 function connectAudioChain(source) {
-  source
-    .connect(audioNodes.highpass)
+  // First part of chain: source -> highpass -> EQ -> effects
+  const preChain = source
+    .connect(audioNodes.highpass);
+
+  preChain
     .connect(audioNodes.eqLow)
     .connect(audioNodes.eqLowMid)
     .connect(audioNodes.eqMid)
@@ -520,7 +583,36 @@ function connectAudioChain(source) {
     .connect(audioNodes.midPeak)
     .connect(audioNodes.highshelf)
     .connect(audioNodes.compressor)
+    .connect(audioNodes.stereoSplitter);
+
+  // M/S Stereo Width Processing
+  // Split into L and R channels
+  // L channel (0) -> lToMid (for L output) and lToSide (for R output)
+  audioNodes.stereoSplitter.connect(audioNodes.lToMid, 0);
+  audioNodes.stereoSplitter.connect(audioNodes.lToSide, 0);
+  // R channel (1) -> rToMid (for L output) and rToSide (for R output)
+  audioNodes.stereoSplitter.connect(audioNodes.rToMid, 1);
+  audioNodes.stereoSplitter.connect(audioNodes.rToSide, 1);
+
+  // Sum for L output: lToMid + rToMid -> merger channel 0
+  audioNodes.lToMid.connect(audioNodes.stereoMerger, 0, 0);
+  audioNodes.rToMid.connect(audioNodes.stereoMerger, 0, 0);
+
+  // Sum for R output: lToSide + rToSide -> merger channel 1
+  audioNodes.lToSide.connect(audioNodes.stereoMerger, 0, 1);
+  audioNodes.rToSide.connect(audioNodes.stereoMerger, 0, 1);
+
+  // Continue chain: stereo merger -> limiter -> meter splitter -> analysers & output
+  audioNodes.stereoMerger
     .connect(audioNodes.limiter)
+    .connect(audioNodes.meterSplitter);
+
+  // Split for stereo metering
+  audioNodes.meterSplitter.connect(audioNodes.analyserL, 0);
+  audioNodes.meterSplitter.connect(audioNodes.analyserR, 1);
+
+  // Also connect to main analyser and output
+  audioNodes.limiter
     .connect(audioNodes.analyser)
     .connect(audioNodes.gain)
     .connect(audioNodes.context.destination);
@@ -560,26 +652,27 @@ function amplitudeToDB(amplitude) {
 }
 
 function updateLevelMeter() {
-  if (!audioNodes.analyser || !meterCtx || !playerState.isPlaying) return;
+  if (!audioNodes.analyserL || !meterCtx || !playerState.isPlaying) return;
 
   const time = performance.now() / 1000;
-  const analyser = audioNodes.analyser;
 
-  // Get frequency data (we'll use time domain for peak detection)
-  const bufferLength = analyser.fftSize;
-  const dataArray = new Float32Array(bufferLength);
-  analyser.getFloatTimeDomainData(dataArray);
+  // Get time domain data from L and R analysers
+  const bufferLength = audioNodes.analyserL.fftSize;
+  const dataArrayL = new Float32Array(bufferLength);
+  const dataArrayR = new Float32Array(bufferLength);
+  audioNodes.analyserL.getFloatTimeDomainData(dataArrayL);
+  audioNodes.analyserR.getFloatTimeDomainData(dataArrayR);
 
-  // Calculate peak for left and right (assuming interleaved or we approximate with full buffer)
-  // Since Web Audio AnalyserNode gives us mono-mixed data, we'll use it for both channels
-  let peak = 0;
+  // Calculate peak for left and right channels separately
+  let peakL = 0, peakR = 0;
   for (let i = 0; i < bufferLength; i++) {
-    const absValue = Math.abs(dataArray[i]);
-    if (absValue > peak) peak = absValue;
+    const absL = Math.abs(dataArrayL[i]);
+    const absR = Math.abs(dataArrayR[i]);
+    if (absL > peakL) peakL = absL;
+    if (absR > peakR) peakR = absR;
   }
 
-  // Use same peak for both channels (limitation of AnalyserNode)
-  const peaks = [peak, peak];
+  const peaks = [peakL, peakR];
   const dbLevels = peaks.map(p => amplitudeToDB(p));
 
   // Update levels with fall rate
@@ -600,7 +693,7 @@ function updateLevelMeter() {
   }
 
   // Check overload
-  if (peak > 1.0) {
+  if (peakL > 1.0 || peakR > 1.0) {
     meterState.overload = true;
     meterState.overloadTime = time;
   } else if (time > meterState.overloadTime + meterState.OVERLOAD_DISPLAY_TIME) {
@@ -1147,6 +1240,7 @@ truePeakSlider.addEventListener('input', () => {
 
 stereoWidthSlider.addEventListener('input', () => {
   stereoWidthValue.textContent = `${stereoWidthSlider.value}%`;
+  updateStereoWidth();
 });
 
 // Output format presets

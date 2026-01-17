@@ -1,6 +1,6 @@
 {
   "name": "suno-song-remaster",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "AI Audio mastering app for Suno songs",
   "main": "dist-electron/main.js",
   "scripts": {
