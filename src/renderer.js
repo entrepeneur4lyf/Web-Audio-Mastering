@@ -294,7 +294,10 @@ const audioNodes = {
 };
 
 const fileState = {
-  selectedFilePath: null
+  selectedFilePath: null,
+  originalBuffer: null,      // Original audio buffer
+  normalizedBuffer: null,    // Loudness normalized buffer
+  isNormalizing: false       // True while normalization is in progress
 };
 
 // Level meter state
@@ -835,6 +838,70 @@ document.querySelectorAll('.preset-btn').forEach(btn => {
 // Audio File Loading
 // ============================================================================
 
+async function normalizeAudioInBackground(filePath) {
+  if (fileState.isNormalizing) return;
+
+  fileState.isNormalizing = true;
+  console.log('[Normalize] Starting background loudness normalization...');
+
+  try {
+    // Read file data
+    const fileData = await window.electronAPI.readFileData(filePath);
+    const inputData = new Uint8Array(fileData instanceof Uint8Array ? fileData : Object.values(fileData));
+
+    // Get input filename
+    const inputName = filePath.split(/[\\/]/).pop();
+    const outputName = 'normalized.wav';
+
+    // Initialize FFmpeg if needed
+    if (!ffmpegLoaded) {
+      await initFFmpeg();
+    }
+
+    // Write input file
+    await ffmpeg.writeFile(inputName, inputData);
+
+    // Run loudnorm only
+    const args = [
+      '-i', inputName,
+      '-af', 'loudnorm=I=-14:TP=-1:LRA=11:linear=true',
+      '-ar', '44100',
+      '-ac', '2',
+      '-c:a', 'pcm_s16le',
+      outputName
+    ];
+
+    await ffmpeg.exec(args);
+
+    // Read output
+    const outputData = await ffmpeg.readFile(outputName);
+
+    // Cleanup
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+
+    // Decode to AudioBuffer
+    const ctx = audioNodes.context || initAudioContext();
+    const arrayBuffer = outputData.buffer.slice(
+      outputData.byteOffset,
+      outputData.byteOffset + outputData.byteLength
+    );
+
+    fileState.normalizedBuffer = await ctx.decodeAudioData(arrayBuffer);
+    console.log('[Normalize] Background normalization complete');
+
+    // If normalize is checked and we're not playing, switch to normalized buffer
+    if (normalizeLoudness.checked && !playerState.isPlaying) {
+      audioNodes.buffer = fileState.normalizedBuffer;
+    }
+
+  } catch (error) {
+    console.error('[Normalize] Background normalization failed:', error);
+  } finally {
+    fileState.isNormalizing = false;
+  }
+}
+
 async function loadAudioFile(filePath) {
   const ctx = initAudioContext();
 
@@ -855,7 +922,12 @@ async function loadAudioFile(filePath) {
       arrayBuffer = uint8.buffer;
     }
 
-    audioNodes.buffer = await ctx.decodeAudioData(arrayBuffer);
+    // Store original buffer
+    fileState.originalBuffer = await ctx.decodeAudioData(arrayBuffer);
+    fileState.normalizedBuffer = null; // Reset normalized buffer
+
+    // Use original buffer initially (or normalized if checkbox is on and we have it)
+    audioNodes.buffer = fileState.originalBuffer;
 
     createAudioChain();
 
@@ -867,6 +939,9 @@ async function loadAudioFile(filePath) {
     playBtn.disabled = false;
     stopBtn.disabled = false;
     processBtn.disabled = false;
+
+    // Always start background normalization (it's on by default)
+    normalizeAudioInBackground(filePath);
 
     return true;
   } catch (error) {
@@ -1227,7 +1302,29 @@ function updateChecklist() {
   miniFormat.classList.toggle('active', fileState.selectedFilePath !== null);
 }
 
-[normalizeLoudness, truePeakLimit, cleanLowEnd, glueCompression, centerBass, cutMud, addAir, tameHarsh].forEach(el => {
+// Special handling for normalizeLoudness to switch buffers
+normalizeLoudness.addEventListener('change', () => {
+  if (normalizeLoudness.checked) {
+    // Switch to normalized buffer if available
+    if (fileState.normalizedBuffer) {
+      audioNodes.buffer = fileState.normalizedBuffer;
+      console.log('[Normalize] Switched to normalized buffer');
+    } else if (fileState.selectedFilePath && !fileState.isNormalizing) {
+      // Start normalization if not already running
+      normalizeAudioInBackground(fileState.selectedFilePath);
+    }
+  } else {
+    // Switch back to original buffer
+    if (fileState.originalBuffer) {
+      audioNodes.buffer = fileState.originalBuffer;
+      console.log('[Normalize] Switched to original buffer');
+    }
+  }
+  updateAudioChain();
+  updateChecklist();
+});
+
+[truePeakLimit, cleanLowEnd, glueCompression, centerBass, cutMud, addAir, tameHarsh].forEach(el => {
   el.addEventListener('change', () => {
     updateAudioChain();
     updateChecklist();
