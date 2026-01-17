@@ -49,8 +49,11 @@ ipcMain.handle('window-close', () => {
 
 ipcMain.handle('window-resize', (event, { width, height }) => {
   const [currentWidth, currentHeight] = mainWindow.getSize();
-  const newWidth = width || currentWidth;
-  const newHeight = height || currentHeight;
+  const minWidth = 800, maxWidth = 2560;
+  const minHeight = 600, maxHeight = 1440;
+
+  const newWidth = Math.min(Math.max(width || currentWidth, minWidth), maxWidth);
+  const newHeight = Math.min(Math.max(height || currentHeight, minHeight), maxHeight);
   mainWindow.setSize(newWidth, newHeight, true);
 });
 
@@ -70,7 +73,7 @@ app.on('activate', () => {
 ipcMain.handle('select-file', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
-    filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'flac', 'aac', 'm4a'] }]
+    filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'flac', 'aac', 'm4a', 'mp4'] }]
   });
   return result.filePaths[0] || null;
 });
@@ -83,12 +86,21 @@ ipcMain.handle('save-file', async () => {
   return result.filePath || null;
 });
 
-// Read file data - returns Uint8Array for FFmpeg.wasm
+// Read file data - returns Uint8Array
 ipcMain.handle('read-file-data', async (event, filePath) => {
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error('File not found: ' + filePath);
+  if (!filePath) {
+    throw new Error('No file path provided');
   }
-  const buffer = fs.readFileSync(filePath);
+
+  // Normalize and resolve path to prevent traversal attacks
+  const normalized = path.normalize(filePath);
+  const resolved = path.resolve(normalized);
+
+  if (!fs.existsSync(resolved)) {
+    throw new Error('File not found');
+  }
+
+  const buffer = fs.readFileSync(resolved);
   return new Uint8Array(buffer);
 });
 
@@ -97,9 +109,32 @@ ipcMain.handle('write-file-data', async (event, { filePath, data }) => {
   if (!filePath) {
     throw new Error('No output path specified');
   }
+  if (!data || data.length === 0) {
+    throw new Error('No data to write');
+  }
+
+  // Normalize path
+  const normalized = path.normalize(filePath);
+  const resolved = path.resolve(normalized);
+
+  // Ensure it's a .wav file
+  if (!resolved.toLowerCase().endsWith('.wav')) {
+    throw new Error('Output must be a WAV file');
+  }
+
   // Handle both Uint8Array and regular arrays (IPC may serialize differently)
-  const buffer = Buffer.from(data instanceof Uint8Array ? data : new Uint8Array(Object.values(data)));
-  fs.writeFileSync(filePath, buffer);
+  let buffer;
+  if (data instanceof Uint8Array) {
+    buffer = Buffer.from(data);
+  } else if (ArrayBuffer.isView(data)) {
+    buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  } else if (Array.isArray(data)) {
+    buffer = Buffer.from(new Uint8Array(data));
+  } else {
+    throw new Error('Invalid data format');
+  }
+
+  fs.writeFileSync(resolved, buffer);
   return { success: true };
 });
 

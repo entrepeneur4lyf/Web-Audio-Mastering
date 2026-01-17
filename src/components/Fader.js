@@ -399,6 +399,12 @@ export class Fader {
   }
 
   destroy() {
+    // Clean up any active drag state
+    if (this._isDragging) {
+      this._isDragging = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
     this.container.textContent = '';
   }
 }

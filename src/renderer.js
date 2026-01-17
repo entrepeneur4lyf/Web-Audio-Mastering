@@ -2,6 +2,8 @@ import WaveSurfer from 'wavesurfer.js';
 import { Fader } from './components/Fader.js';
 
 let wavesurfer = null;
+let currentBlobUrl = null; // Track blob URL for cleanup
+let isSeeking = false; // Seek lock to prevent race conditions
 
 // Fader instances
 const faders = {
@@ -83,6 +85,13 @@ function measureLUFS(audioBuffer) {
   const sampleRate = audioBuffer.sampleRate;
   const numChannels = audioBuffer.numberOfChannels;
   const length = audioBuffer.length;
+
+  // Minimum 400ms required for LUFS measurement (one block)
+  const minDuration = 0.4;
+  if (audioBuffer.duration < minDuration) {
+    console.warn('[LUFS] Audio too short for reliable measurement (< 400ms)');
+    return -14; // Return target LUFS as fallback
+  }
 
   const channels = [];
   for (let ch = 0; ch < numChannels; ch++) {
@@ -782,9 +791,11 @@ function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
         view.setInt16(offset, intSample, true);
         offset += 2;
       } else if (bitDepth === 24) {
-        view.setUint8(offset, intSample & 0xFF);
-        view.setUint8(offset + 1, (intSample >> 8) & 0xFF);
-        view.setUint8(offset + 2, (intSample >> 16) & 0xFF);
+        // Clamp to prevent overflow in bitwise operations
+        const clampedSample = Math.max(-8388607, Math.min(8388607, intSample));
+        view.setUint8(offset, clampedSample & 0xFF);
+        view.setUint8(offset + 1, (clampedSample >> 8) & 0xFF);
+        view.setUint8(offset + 2, (clampedSample >> 16) & 0xFF);
         offset += 3;
       }
     }
@@ -1108,9 +1119,16 @@ function stopMeter() {
 // ============================================================================
 
 function initWaveSurfer(audioBuffer, originalBlob) {
+  // Cleanup previous instance
   if (wavesurfer) {
     wavesurfer.destroy();
     wavesurfer = null;
+  }
+
+  // Revoke previous blob URL to prevent memory leak
+  if (currentBlobUrl) {
+    URL.revokeObjectURL(currentBlobUrl);
+    currentBlobUrl = null;
   }
 
   // Create gradient
@@ -1128,8 +1146,8 @@ function initWaveSurfer(audioBuffer, originalBlob) {
   // Extract peaks for immediate display
   const peaks = extractPeaks(audioBuffer);
 
-  // Create blob URL for WaveSurfer
-  const blobUrl = URL.createObjectURL(originalBlob);
+  // Create blob URL for WaveSurfer (tracked for cleanup)
+  currentBlobUrl = URL.createObjectURL(originalBlob);
 
   wavesurfer = WaveSurfer.create({
     container: '#waveform',
@@ -1144,7 +1162,7 @@ function initWaveSurfer(audioBuffer, originalBlob) {
     normalize: true,
     interact: true,
     dragToSeek: true,
-    url: blobUrl,
+    url: currentBlobUrl,
     peaks: [peaks],
     duration: audioBuffer.duration,
   });
@@ -1438,17 +1456,23 @@ async function loadAudioFile(filePath) {
 
     if (fileData instanceof Uint8Array) {
       arrayBuffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
-    } else if (fileData.buffer) {
+    } else if (fileData instanceof ArrayBuffer) {
+      arrayBuffer = fileData;
+    } else if (fileData.buffer && fileData.byteLength !== undefined) {
       arrayBuffer = fileData.buffer.slice(fileData.byteOffset || 0, (fileData.byteOffset || 0) + fileData.byteLength);
     } else {
-      const uint8 = new Uint8Array(Object.values(fileData));
-      arrayBuffer = uint8.buffer;
+      throw new Error('Invalid file data format received');
     }
 
     showLoadingModal('Decoding audio...', 20);
 
-    // Decode audio using browser's native decoder (supports MP3, WAV, FLAC, AAC, M4A)
-    const decodedBuffer = await ctx.decodeAudioData(arrayBuffer);
+    // Decode audio using browser's native decoder (supports MP3, WAV, FLAC, AAC, M4A, MP4)
+    let decodedBuffer;
+    try {
+      decodedBuffer = await ctx.decodeAudioData(arrayBuffer);
+    } catch (decodeError) {
+      throw new Error(`Cannot decode audio file. Format may be unsupported or file is corrupted.`);
+    }
     fileState.originalBuffer = decodedBuffer;
 
     showLoadingModal('Measuring loudness...', 40);
@@ -1572,6 +1596,10 @@ function stopAudio() {
 }
 
 function seekTo(time) {
+  // Prevent race condition from rapid seeks
+  if (isSeeking) return;
+  isSeeking = true;
+
   playerState.pauseTime = time;
 
   if (playerState.isPlaying) {
@@ -1620,6 +1648,9 @@ function seekTo(time) {
     currentTimeEl.textContent = formatTime(time);
     updateWaveSurferProgress(time);
   }
+
+  // Release seek lock after a brief delay to allow audio to stabilize
+  setTimeout(() => { isSeeking = false; }, 50);
 }
 
 function formatTime(seconds) {
@@ -1633,18 +1664,28 @@ function formatTime(seconds) {
 // ============================================================================
 
 selectFileBtn.addEventListener('click', async () => {
-  const filePath = await window.electronAPI.selectFile();
-  if (filePath) {
-    await loadFile(filePath);
+  try {
+    const filePath = await window.electronAPI.selectFile();
+    if (filePath) {
+      await loadFile(filePath);
+    }
+  } catch (error) {
+    console.error('File selection failed:', error);
+    showToast('Failed to open file dialog', 'error');
   }
 });
 
 changeFileBtn.addEventListener('click', async () => {
-  const filePath = await window.electronAPI.selectFile();
-  if (filePath) {
-    stopAudio();
-    playerState.pauseTime = 0;
-    await loadFile(filePath);
+  try {
+    const filePath = await window.electronAPI.selectFile();
+    if (filePath) {
+      stopAudio();
+      playerState.pauseTime = 0;
+      await loadFile(filePath);
+    }
+  } catch (error) {
+    console.error('File selection failed:', error);
+    showToast('Failed to open file dialog', 'error');
   }
 });
 
@@ -1656,7 +1697,9 @@ async function loadFile(filePath) {
 
   if (loaded && audioNodes.buffer) {
     // Get file info from the decoded audio buffer and file path
-    const name = filePath.split(/[\\/]/).pop();
+    const rawName = filePath.split(/[\\/]/).pop();
+    // Sanitize file name: remove control characters and limit length
+    const name = rawName.replace(/[\x00-\x1F\x7F]/g, '').substring(0, 100);
     const ext = name.split('.').pop().toUpperCase();
     const sampleRateKHz = Math.round(audioNodes.buffer.sampleRate / 1000);
     const duration = formatTime(audioNodes.buffer.duration);
@@ -1748,19 +1791,44 @@ processBtn.addEventListener('click', async () => {
   processingCancelled = false;
   processBtn.disabled = true;
 
+  // Parse and validate settings
+  const parsedSampleRate = parseInt(sampleRate.value) || 44100;
+  const parsedBitDepth = parseInt(bitDepth.value) || 16;
+  const parsedStereoWidth = parseInt(stereoWidthSlider.value) || 100;
+
+  // Validate settings
+  if (![44100, 48000].includes(parsedSampleRate)) {
+    showToast('Invalid sample rate', 'error');
+    processBtn.disabled = false;
+    isProcessing = false;
+    return;
+  }
+  if (![16, 24].includes(parsedBitDepth)) {
+    showToast('Invalid bit depth', 'error');
+    processBtn.disabled = false;
+    isProcessing = false;
+    return;
+  }
+  if (parsedStereoWidth < 0 || parsedStereoWidth > 200) {
+    showToast('Invalid stereo width', 'error');
+    processBtn.disabled = false;
+    isProcessing = false;
+    return;
+  }
+
   const settings = {
     normalizeLoudness: normalizeLoudness.checked,
     truePeakLimit: truePeakLimit.checked,
     truePeakCeiling: ceilingValueDb,
     cleanLowEnd: cleanLowEnd.checked,
     glueCompression: glueCompression.checked,
-    stereoWidth: parseInt(stereoWidthSlider.value),
+    stereoWidth: parsedStereoWidth,
     centerBass: centerBass.checked,
     cutMud: cutMud.checked,
     addAir: addAir.checked,
     tameHarsh: tameHarsh.checked,
-    sampleRate: parseInt(sampleRate.value),
-    bitDepth: parseInt(bitDepth.value),
+    sampleRate: parsedSampleRate,
+    bitDepth: parsedBitDepth,
     inputGain: inputGainValue,
     eqLow: eqValues.low,
     eqLowMid: eqValues.lowMid,
