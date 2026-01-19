@@ -39,15 +39,15 @@
     ],
     "win": {
       "target": "portable",
-      "icon": "image.png"
+      "icon": "logo-icon.png"
     },
     "mac": {
       "target": "dmg",
-      "icon": "image.png"
+      "icon": "logo-icon.png"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "image.png"
+      "icon": "logo-icon.png"
     }
   },
   "dependencies": {
