@@ -2197,6 +2197,62 @@ document.querySelectorAll('[data-tip]').forEach(el => {
 });
 
 // ============================================================================
+// Window Cleanup - prevent resource leaks on close
+// ============================================================================
+
+window.addEventListener('beforeunload', () => {
+  // Stop level meter animation
+  if (meterState.animationId) {
+    cancelAnimationFrame(meterState.animationId);
+    meterState.animationId = null;
+  }
+
+  // Clear seek update interval
+  if (playerState.seekUpdateInterval) {
+    clearInterval(playerState.seekUpdateInterval);
+    playerState.seekUpdateInterval = null;
+  }
+
+  // Stop audio playback
+  if (audioNodes.source) {
+    try {
+      audioNodes.source.stop();
+    } catch (e) { /* ignore */ }
+  }
+
+  // Destroy WaveSurfer
+  if (wavesurfer) {
+    try {
+      wavesurfer.destroy();
+    } catch (e) { /* ignore */ }
+    wavesurfer = null;
+  }
+
+  // Destroy faders
+  Object.keys(faders).forEach(key => {
+    if (faders[key] && typeof faders[key].destroy === 'function') {
+      try {
+        faders[key].destroy();
+      } catch (e) { /* ignore */ }
+    }
+    faders[key] = null;
+  });
+
+  // Close AudioContext
+  if (audioNodes.context && audioNodes.context.state !== 'closed') {
+    try {
+      audioNodes.context.close();
+    } catch (e) { /* ignore */ }
+  }
+
+  // Revoke blob URL
+  if (currentBlobUrl) {
+    URL.revokeObjectURL(currentBlobUrl);
+    currentBlobUrl = null;
+  }
+});
+
+// ============================================================================
 // Initialize
 // ============================================================================
 

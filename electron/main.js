@@ -18,7 +18,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     },
     backgroundColor: '#080808',
-    icon: path.join(__dirname, '..', 'image.png')
+    icon: path.join(__dirname, '..', 'logo-icon.png')
   });
 
   // Load from Vite dev server or built files
@@ -28,6 +28,11 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
+
+  // Clear reference when window is closed
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 }
 
 // Window control handlers
@@ -62,6 +67,17 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // Remove all IPC handlers to prevent leaks
+  ipcMain.removeHandler('window-minimize');
+  ipcMain.removeHandler('window-maximize');
+  ipcMain.removeHandler('window-close');
+  ipcMain.removeHandler('window-resize');
+  ipcMain.removeHandler('select-file');
+  ipcMain.removeHandler('save-file');
+  ipcMain.removeHandler('read-file-data');
+  ipcMain.removeHandler('write-file-data');
+  ipcMain.removeHandler('send-progress');
+
   if (process.platform !== 'darwin') app.quit();
 });
 
