@@ -38,12 +38,8 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "target": ["nsis", "portable"],
+      "target": "portable",
       "icon": "image.png"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
     },
     "mac": {
       "target": "dmg",
