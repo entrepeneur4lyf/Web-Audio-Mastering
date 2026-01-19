@@ -18,7 +18,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     },
     backgroundColor: '#080808',
-    icon: path.join(__dirname, '..', 'logo-icon.png')
+    icon: path.join(__dirname, '..', 'icon.png')
   });
 
   // Load from Vite dev server or built files
