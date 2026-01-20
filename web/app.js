@@ -2074,13 +2074,100 @@ stereoWidthSlider.addEventListener('input', () => {
   updateStereoWidth();
 });
 
-// Target LUFS slider
-targetLufsSlider.addEventListener('input', () => {
-  targetLufsDb = parseInt(targetLufsSlider.value);
-  targetLufsValue.textContent = `${targetLufsDb} LUFS`;
-  if (miniLufsValue) {
-    miniLufsValue.textContent = `${targetLufsDb} LUFS`;
+// Target LUFS slider with debounced re-normalization
+let lufsDebounceTimeout = null;
+let isRenormalizing = false;
+
+async function renormalizeAudio(newTargetLufs) {
+  // Only re-normalize if we have an original buffer and normalization is enabled
+  if (!fileState.originalBuffer || !normalizeLoudness.checked) {
+    return;
   }
+
+  // Prevent concurrent re-normalization
+  if (isRenormalizing) {
+    return;
+  }
+  isRenormalizing = true;
+
+  // Store playback state
+  const wasPlaying = playerState.isPlaying;
+  const playbackPosition = wasPlaying ?
+    (audioNodes.context.currentTime - playerState.startTime) :
+    playerState.pauseTime;
+
+  // Stop playback if playing
+  if (wasPlaying) {
+    stopAudio();
+    stopMeter();
+  }
+
+  // Disable transport controls
+  playBtn.disabled = true;
+  stopBtn.disabled = true;
+
+  try {
+    // Show modal
+    showLoadingModal(`Normalizing to ${newTargetLufs} LUFS...`, 10);
+
+    // Allow UI to update
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    showLoadingModal(`Normalizing to ${newTargetLufs} LUFS...`, 30);
+
+    // Re-normalize to new target
+    const normalizedBuffer = normalizeToLUFS(fileState.originalBuffer, newTargetLufs);
+
+    showLoadingModal(`Normalizing to ${newTargetLufs} LUFS...`, 80);
+
+    // Update buffers
+    fileState.normalizedBuffer = normalizedBuffer;
+    audioNodes.buffer = normalizedBuffer;
+
+    // Allow UI to update
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    showLoadingModal('Ready!', 100);
+
+    // Brief delay to show completion
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+  } catch (error) {
+    console.error('Re-normalization failed:', error);
+    showToast(`Normalization failed: ${error.message}`, 'error');
+  } finally {
+    // Hide modal and re-enable controls
+    hideLoadingModal();
+    playBtn.disabled = false;
+    stopBtn.disabled = false;
+    isRenormalizing = false;
+
+    // Restore playback position
+    playerState.pauseTime = Math.min(playbackPosition, audioNodes.buffer?.duration || 0);
+    seekBar.value = playerState.pauseTime;
+    currentTimeEl.textContent = formatTime(playerState.pauseTime);
+    updateWaveSurferProgress(playerState.pauseTime);
+  }
+}
+
+targetLufsSlider.addEventListener('input', () => {
+  const newValue = parseInt(targetLufsSlider.value);
+
+  // Update display immediately
+  targetLufsDb = newValue;
+  targetLufsValue.textContent = `${newValue} LUFS`;
+  if (miniLufsValue) {
+    miniLufsValue.textContent = `${newValue} LUFS`;
+  }
+
+  // Debounce the re-normalization (wait for user to stop sliding)
+  if (lufsDebounceTimeout) {
+    clearTimeout(lufsDebounceTimeout);
+  }
+
+  lufsDebounceTimeout = setTimeout(() => {
+    renormalizeAudio(newValue);
+  }, 300); // 300ms debounce
 });
 
 // Output format presets
