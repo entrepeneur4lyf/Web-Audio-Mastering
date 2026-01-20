@@ -169,6 +169,153 @@ function measureLUFS(audioBuffer) {
 }
 
 /**
+ * Apply soft-knee limiting curve using tanh sigmoid
+ * Provides transparent peak control without hard clipping distortion
+ *
+ * The curve has two regions:
+ * 1. Below ceiling: Linear passthrough (unity gain)
+ * 2. Above ceiling: Soft saturation using tanh (asymptotic approach to 1.0)
+ *
+ * The tanh function ensures:
+ * - Smooth, continuous transition at the ceiling
+ * - Output asymptotically approaches but never exceeds 1.0
+ * - No discontinuities that cause audible distortion
+ *
+ * @param {number} sample - Input sample value
+ * @param {number} ceiling - Target ceiling in linear (e.g., 0.891 for -1dBTP)
+ * @param {number} kneeDB - Soft knee width in dB (default 3dB, range 0-12)
+ * @returns {number} Limited sample value
+ */
+function applySoftKneeCurve(sample, ceiling, kneeDB = 3) {
+  const absSample = Math.abs(sample);
+
+  // Fast path: signal well below ceiling
+  if (absSample <= ceiling * 0.9) {
+    return sample;
+  }
+
+  // Calculate knee boundaries
+  // Knee width in linear: ratio between knee start and ceiling
+  const kneeRatio = Math.pow(10, kneeDB / 20);
+  const kneeStart = ceiling / kneeRatio;
+
+  // Region 1: Below knee start - pure linear passthrough
+  if (absSample <= kneeStart) {
+    return sample;
+  }
+
+  // Region 2: In the knee (between kneeStart and ceiling)
+  // Smooth polynomial blend from linear to limited
+  if (absSample <= ceiling) {
+    // Normalized position in knee (0 = knee start, 1 = ceiling)
+    const t = (absSample - kneeStart) / (ceiling - kneeStart);
+
+    // Smoothstep function for gradual transition: 3t² - 2t³
+    const blend = t * t * (3 - 2 * t);
+
+    // Blend between linear output and ceiling
+    // At t=0: output = absSample (linear)
+    // At t=1: output = ceiling (just touching limit)
+    const output = absSample + (ceiling - absSample) * blend * 0.5;
+
+    return Math.sign(sample) * output;
+  }
+
+  // Region 3: Above ceiling - tanh soft saturation
+  // This is where the magic happens: smooth compression using tanh
+  const excess = absSample - ceiling;
+  const headroom = 1.0 - ceiling; // Available space between ceiling and 0dBFS
+
+  // Prevent division by zero if ceiling is at 1.0
+  if (headroom <= 0.001) {
+    return Math.sign(sample) * ceiling;
+  }
+
+  // tanh(x) approaches 1 asymptotically as x → ∞
+  // Scale the excess so that moderate overs use ~50% of headroom
+  // and extreme overs approach but never reach 1.0
+  const scaledExcess = excess / headroom;
+  const saturation = Math.tanh(scaledExcess);
+
+  // Output: ceiling + portion of remaining headroom
+  // As input → ∞, output → ceiling + headroom = 1.0
+  const output = ceiling + headroom * saturation;
+
+  return Math.sign(sample) * output;
+}
+
+/**
+ * Apply soft-knee curve with 4x oversampling to handle inter-sample peaks
+ * Uses Catmull-Rom interpolation for upsampling and proper filtering
+ *
+ * @param {Float32Array} input - Input sample array
+ * @param {number} ceiling - Ceiling in linear
+ * @param {number} kneeDB - Knee width in dB
+ * @returns {Float32Array} Processed output (same length as input)
+ */
+function applySoftKneeOversampled(input, ceiling, kneeDB = 3) {
+  const length = input.length;
+  const output = new Float32Array(length);
+
+  // Process with 4x oversampling using Catmull-Rom interpolation
+  const prevSamples = [0, 0, 0, 0];
+
+  for (let i = 0; i < length; i++) {
+    // Shift sample history
+    prevSamples[0] = prevSamples[1];
+    prevSamples[1] = prevSamples[2];
+    prevSamples[2] = prevSamples[3];
+    prevSamples[3] = input[i];
+
+    if (i < 3) {
+      // Not enough samples for interpolation yet
+      output[i] = applySoftKneeCurve(input[i], ceiling, kneeDB);
+      continue;
+    }
+
+    // Calculate Catmull-Rom coefficients
+    const y0 = prevSamples[0];
+    const y1 = prevSamples[1];
+    const y2 = prevSamples[2]; // Current sample position
+    const y3 = prevSamples[3];
+
+    const a0 = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+    const a1 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+    const a2 = -0.5 * y0 + 0.5 * y2;
+    const a3 = y1;
+
+    // Find the maximum oversampled value and apply limiting
+    let maxInterpolated = Math.abs(y2);
+    let maxT = 0;
+
+    // Check 4x oversampled points between y1 and y2
+    for (let j = 1; j <= 3; j++) {
+      const t = j * 0.25;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const interpolated = Math.abs(a0 * t3 + a1 * t2 + a2 * t + a3);
+      if (interpolated > maxInterpolated) {
+        maxInterpolated = interpolated;
+        maxT = t;
+      }
+    }
+
+    // If inter-sample peak exceeds ceiling, we need to reduce the sample
+    if (maxInterpolated > ceiling) {
+      // Calculate gain reduction needed to bring inter-sample peak to ceiling
+      const gainReduction = ceiling / maxInterpolated;
+      // Apply soft-knee to the reduced signal
+      output[i] = applySoftKneeCurve(input[i] * gainReduction, ceiling, kneeDB);
+    } else {
+      // No inter-sample peak issue, just apply soft-knee to sample
+      output[i] = applySoftKneeCurve(input[i], ceiling, kneeDB);
+    }
+  }
+
+  return output;
+}
+
+/**
  * Calculate true peak using 4x oversampled Catmull-Rom interpolation
  * This finds inter-sample peaks that simple sample-based measurement misses
  * ITU-R BS.1770 compliant true-peak detection
@@ -232,16 +379,31 @@ function findTruePeak(audioBuffer) {
 }
 
 /**
- * Apply lookahead limiter to an AudioBuffer
- * Uses true-peak detection with 4x oversampling and smooth gain envelope
+ * Two-Stage Lookahead Limiter with Soft-Knee Safety
+ *
+ * Stage 1: Lookahead gain reduction
+ * - Uses true-peak detection with 4x oversampling
+ * - Sees peaks coming and reduces gain before they hit
+ * - Smooth attack/release envelope for transparency
+ *
+ * Stage 2: Soft-knee saturation safety net
+ * - Catches any remaining peaks that slip through
+ * - Uses tanh sigmoid curve - no hard clipping
+ * - Oversampled to handle inter-sample peaks
+ *
+ * Stage 3: Transient-aware gain adjustment (optional)
+ * - Detects high crest factor (transient) regions
+ * - Applies gentler limiting to preserve transient punch
  *
  * @param audioBuffer - Input AudioBuffer
  * @param ceilingLinear - Ceiling in linear scale (e.g., 0.891 for -1dBTP)
  * @param lookaheadMs - Lookahead time in milliseconds (default 3ms)
  * @param releaseMs - Release time in milliseconds (default 100ms)
+ * @param kneeDB - Soft knee width in dB (default 3dB)
+ * @param preserveTransients - Apply gentler limiting on transients (default true)
  * @returns New AudioBuffer with limiting applied
  */
-function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs = 3, releaseMs = 100) {
+function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs = 3, releaseMs = 100, kneeDB = 3, preserveTransients = true) {
   const sampleRate = audioBuffer.sampleRate;
   const numChannels = audioBuffer.numberOfChannels;
   const length = audioBuffer.length;
@@ -255,7 +417,78 @@ function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs =
     channels.push(audioBuffer.getChannelData(ch));
   }
 
-  // First pass: Calculate gain reduction envelope
+  // =========================================================================
+  // Stage 0 (optional): Analyze transients for crest factor detection
+  // High crest factor = transient punch, needs gentler limiting
+  // =========================================================================
+  let transientMap = null;
+  if (preserveTransients) {
+    transientMap = new Float32Array(length);
+    const windowMs = 10; // 10ms RMS window
+    const windowSamples = Math.floor(sampleRate * windowMs / 1000);
+
+    // Calculate RMS envelope
+    const rmsEnvelope = new Float32Array(length);
+    let rmsSum = 0;
+
+    for (let i = 0; i < length; i++) {
+      // Sum of squares for all channels
+      let sampleSum = 0;
+      for (let ch = 0; ch < numChannels; ch++) {
+        sampleSum += channels[ch][i] * channels[ch][i];
+      }
+      sampleSum /= numChannels;
+
+      rmsSum += sampleSum;
+      if (i >= windowSamples) {
+        let oldSum = 0;
+        for (let ch = 0; ch < numChannels; ch++) {
+          oldSum += channels[ch][i - windowSamples] * channels[ch][i - windowSamples];
+        }
+        rmsSum -= oldSum / numChannels;
+      }
+
+      const windowSize = Math.min(i + 1, windowSamples);
+      rmsEnvelope[i] = Math.sqrt(rmsSum / windowSize);
+    }
+
+    // Calculate peak envelope (fast attack, slow release)
+    const peakEnvelope = new Float32Array(length);
+    const peakAttack = Math.exp(-1 / (0.001 * sampleRate)); // 1ms attack
+    const peakRelease = Math.exp(-1 / (0.050 * sampleRate)); // 50ms release
+    let peakLevel = 0;
+
+    for (let i = 0; i < length; i++) {
+      let peak = 0;
+      for (let ch = 0; ch < numChannels; ch++) {
+        peak = Math.max(peak, Math.abs(channels[ch][i]));
+      }
+
+      if (peak > peakLevel) {
+        peakLevel = peakAttack * peakLevel + (1 - peakAttack) * peak;
+      } else {
+        peakLevel = peakRelease * peakLevel + (1 - peakRelease) * peak;
+      }
+      peakEnvelope[i] = peakLevel;
+    }
+
+    // Calculate crest factor and transient map
+    // Crest factor > 10dB indicates transient, allow more headroom
+    const transientThresholdDB = 10;
+    for (let i = 0; i < length; i++) {
+      if (rmsEnvelope[i] > 0.0001) {
+        const crestFactorDB = 20 * Math.log10(peakEnvelope[i] / rmsEnvelope[i]);
+        // Map: 0dB crest = 0 (sustain), 10+dB crest = 1 (transient)
+        transientMap[i] = Math.min(1, Math.max(0, (crestFactorDB - 6) / (transientThresholdDB - 6)));
+      } else {
+        transientMap[i] = 0;
+      }
+    }
+  }
+
+  // =========================================================================
+  // Stage 1: Calculate gain reduction envelope with lookahead
+  // =========================================================================
   const gainEnvelope = new Float32Array(length);
   gainEnvelope.fill(1.0);
 
@@ -286,26 +519,39 @@ function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs =
     }
 
     // Calculate required gain reduction
+    // For transients, use slightly higher effective ceiling to preserve punch
+    let effectiveCeiling = ceilingLinear;
+    if (preserveTransients && transientMap && transientMap[i] > 0.5) {
+      // Allow up to 1dB more headroom for strong transients
+      // The soft-knee stage will catch any overs
+      effectiveCeiling = ceilingLinear * Math.pow(10, transientMap[i] * 0.5 / 20);
+    }
+
     let requiredGain = 1.0;
-    if (truePeak > ceilingLinear) {
-      requiredGain = ceilingLinear / truePeak;
+    if (truePeak > effectiveCeiling) {
+      requiredGain = effectiveCeiling / truePeak;
     }
 
     // Apply lookahead - the gain reduction affects samples BEFORE this point
     const targetIndex = Math.max(0, i - lookaheadSamples);
     if (requiredGain < gainEnvelope[targetIndex]) {
-      // Instant attack - apply gain reduction immediately
+      // Smooth attack over lookahead period instead of instant
+      // This prevents pumping artifacts
       for (let j = targetIndex; j <= i; j++) {
-        gainEnvelope[j] = Math.min(gainEnvelope[j], requiredGain);
+        const progress = (j - targetIndex) / lookaheadSamples;
+        const smoothedGain = gainEnvelope[targetIndex] + (requiredGain - gainEnvelope[targetIndex]) * progress;
+        gainEnvelope[j] = Math.min(gainEnvelope[j], smoothedGain);
       }
     }
   }
 
-  // Second pass: Smooth the gain envelope (release)
+  // =========================================================================
+  // Stage 1b: Smooth the gain envelope (release)
+  // =========================================================================
   let currentGain = 1.0;
   for (let i = 0; i < length; i++) {
     if (gainEnvelope[i] < currentGain) {
-      // Instant attack
+      // Instant attack (already smoothed by lookahead)
       currentGain = gainEnvelope[i];
     } else {
       // Smooth release
@@ -315,7 +561,9 @@ function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs =
     gainEnvelope[i] = currentGain;
   }
 
-  // Create output buffer and apply gain envelope
+  // =========================================================================
+  // Stage 2: Apply gain envelope and soft-knee saturation
+  // =========================================================================
   const outputBuffer = new AudioBuffer({
     numberOfChannels: numChannels,
     length: length,
@@ -325,18 +573,45 @@ function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs =
   for (let ch = 0; ch < numChannels; ch++) {
     const input = channels[ch];
     const output = outputBuffer.getChannelData(ch);
+
+    // First apply gain reduction
     for (let i = 0; i < length; i++) {
       output[i] = input[i] * gainEnvelope[i];
     }
+
+    // Then apply soft-knee curve with oversampling as final safety
+    const softKneeOutput = applySoftKneeOversampled(output, ceilingLinear, kneeDB);
+    for (let i = 0; i < length; i++) {
+      output[i] = softKneeOutput[i];
+    }
   }
 
-  // Log gain reduction stats
+  // =========================================================================
+  // Logging
+  // =========================================================================
   let minGain = 1.0;
+  let softKneeActive = false;
   for (let i = 0; i < length; i++) {
     if (gainEnvelope[i] < minGain) minGain = gainEnvelope[i];
   }
+
+  // Check if soft-knee did any work
+  for (let ch = 0; ch < numChannels; ch++) {
+    const output = outputBuffer.getChannelData(ch);
+    for (let i = 0; i < length; i++) {
+      if (Math.abs(output[i]) > ceilingLinear * 0.99) {
+        softKneeActive = true;
+        break;
+      }
+    }
+    if (softKneeActive) break;
+  }
+
   if (minGain < 1.0) {
-    console.log('[Limiter] Max gain reduction:', (20 * Math.log10(minGain)).toFixed(2), 'dB');
+    console.log('[Limiter] Stage 1 - Max gain reduction:', (20 * Math.log10(minGain)).toFixed(2), 'dB');
+  }
+  if (softKneeActive) {
+    console.log('[Limiter] Stage 2 - Soft-knee saturation active');
   }
 
   return outputBuffer;
