@@ -170,7 +170,40 @@ function measureLUFS(audioBuffer) {
 }
 
 /**
- * Find the true peak of an AudioBuffer (maximum absolute sample value)
+ * Calculate true peak for a sample using 4x oversampling with Catmull-Rom interpolation
+ * Based on ITU-R BS.1770-4 true peak measurement
+ * @param {number[]} prevSamples - Array of 4 samples [y0, y1, y2, y3] where y2 is the current sample
+ * @returns {number} The true peak (maximum interpolated value)
+ */
+function calculateTruePeakSample(prevSamples) {
+  const y0 = prevSamples[0];
+  const y1 = prevSamples[1];
+  const y2 = prevSamples[2];
+  const y3 = prevSamples[3];
+
+  // Start with the sample value itself
+  let peak = Math.abs(y2);
+
+  // Catmull-Rom coefficients
+  const a0 = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+  const a1 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+  const a2 = -0.5 * y0 + 0.5 * y2;
+  const a3 = y1;
+
+  // Check 4x oversampled points between y1 and y2
+  for (let i = 1; i <= 3; i++) {
+    const t = i * 0.25;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const interpolated = a0 * t3 + a1 * t2 + a2 * t + a3;
+    peak = Math.max(peak, Math.abs(interpolated));
+  }
+
+  return peak;
+}
+
+/**
+ * Find the true peak of an AudioBuffer using 4x oversampling
  * Returns peak in dBTP (decibels relative to full scale)
  */
 function findTruePeak(audioBuffer) {
@@ -178,16 +211,137 @@ function findTruePeak(audioBuffer) {
 
   for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
     const channelData = audioBuffer.getChannelData(ch);
+    const prevSamples = [0, 0, 0, 0];
+
     for (let i = 0; i < channelData.length; i++) {
-      const absSample = Math.abs(channelData[i]);
-      if (absSample > maxPeak) {
-        maxPeak = absSample;
+      // Shift samples
+      prevSamples[0] = prevSamples[1];
+      prevSamples[1] = prevSamples[2];
+      prevSamples[2] = prevSamples[3];
+      prevSamples[3] = channelData[i];
+
+      // Need at least 4 samples for interpolation
+      if (i >= 3) {
+        const truePeak = calculateTruePeakSample(prevSamples);
+        if (truePeak > maxPeak) {
+          maxPeak = truePeak;
+        }
       }
     }
   }
 
   // Convert to dBTP (0 dBTP = 1.0 linear)
   return maxPeak > 0 ? 20 * Math.log10(maxPeak) : -Infinity;
+}
+
+/**
+ * Apply lookahead limiter to an AudioBuffer
+ * Uses true peak detection and smooth gain envelope
+ * @param {AudioBuffer} audioBuffer - Input buffer
+ * @param {number} ceilingLinear - Ceiling in linear (default 0.891 = -1 dBTP)
+ * @param {number} lookaheadMs - Lookahead time in ms (default 3ms)
+ * @param {number} releaseMs - Release time in ms (default 100ms)
+ * @returns {AudioBuffer} Limited buffer
+ */
+function applyLookaheadLimiter(audioBuffer, ceilingLinear = 0.891, lookaheadMs = 3, releaseMs = 100) {
+  const sampleRate = audioBuffer.sampleRate;
+  const numChannels = audioBuffer.numberOfChannels;
+  const length = audioBuffer.length;
+
+  const lookaheadSamples = Math.floor(sampleRate * lookaheadMs / 1000);
+  const releaseCoef = Math.exp(-1 / (releaseMs * sampleRate / 1000));
+
+  // Get channel data
+  const channels = [];
+  for (let ch = 0; ch < numChannels; ch++) {
+    channels.push(audioBuffer.getChannelData(ch));
+  }
+
+  // First pass: Calculate gain reduction envelope
+  const gainEnvelope = new Float32Array(length);
+  gainEnvelope.fill(1.0);
+
+  const prevSamplesL = [0, 0, 0, 0];
+  const prevSamplesR = numChannels > 1 ? [0, 0, 0, 0] : null;
+
+  for (let i = 0; i < length; i++) {
+    // Update previous samples for true peak calculation
+    prevSamplesL[0] = prevSamplesL[1];
+    prevSamplesL[1] = prevSamplesL[2];
+    prevSamplesL[2] = prevSamplesL[3];
+    prevSamplesL[3] = channels[0][i];
+
+    let truePeak = 0;
+    if (i >= 3) {
+      truePeak = calculateTruePeakSample(prevSamplesL);
+    }
+
+    if (numChannels > 1 && prevSamplesR) {
+      prevSamplesR[0] = prevSamplesR[1];
+      prevSamplesR[1] = prevSamplesR[2];
+      prevSamplesR[2] = prevSamplesR[3];
+      prevSamplesR[3] = channels[1][i];
+
+      if (i >= 3) {
+        truePeak = Math.max(truePeak, calculateTruePeakSample(prevSamplesR));
+      }
+    }
+
+    // Calculate required gain reduction
+    let requiredGain = 1.0;
+    if (truePeak > ceilingLinear) {
+      requiredGain = ceilingLinear / truePeak;
+    }
+
+    // Apply lookahead - the gain reduction affects samples BEFORE this point
+    const targetIndex = Math.max(0, i - lookaheadSamples);
+    if (requiredGain < gainEnvelope[targetIndex]) {
+      // Instant attack - apply gain reduction immediately
+      for (let j = targetIndex; j <= i; j++) {
+        gainEnvelope[j] = Math.min(gainEnvelope[j], requiredGain);
+      }
+    }
+  }
+
+  // Second pass: Smooth the gain envelope (release)
+  let currentGain = 1.0;
+  for (let i = 0; i < length; i++) {
+    if (gainEnvelope[i] < currentGain) {
+      // Instant attack
+      currentGain = gainEnvelope[i];
+    } else {
+      // Smooth release
+      currentGain = releaseCoef * currentGain + (1 - releaseCoef) * 1.0;
+      currentGain = Math.min(currentGain, 1.0);
+    }
+    gainEnvelope[i] = currentGain;
+  }
+
+  // Create output buffer and apply gain envelope
+  const outputBuffer = new AudioBuffer({
+    numberOfChannels: numChannels,
+    length: length,
+    sampleRate: sampleRate
+  });
+
+  for (let ch = 0; ch < numChannels; ch++) {
+    const input = channels[ch];
+    const output = outputBuffer.getChannelData(ch);
+    for (let i = 0; i < length; i++) {
+      output[i] = input[i] * gainEnvelope[i];
+    }
+  }
+
+  // Log gain reduction stats
+  let minGain = 1.0;
+  for (let i = 0; i < length; i++) {
+    if (gainEnvelope[i] < minGain) minGain = gainEnvelope[i];
+  }
+  if (minGain < 1.0) {
+    console.log('[Limiter] Max gain reduction:', (20 * Math.log10(minGain)).toFixed(2), 'dB');
+  }
+
+  return outputBuffer;
 }
 
 /**
@@ -209,23 +363,16 @@ function normalizeToLUFS(audioBuffer, targetLUFS = -14, ceilingDB = -1) {
 
   // Calculate gain needed to reach target LUFS
   const lufsGainDB = targetLUFS - currentLUFS;
+  const gainLinear = Math.pow(10, lufsGainDB / 20);
 
-  // Calculate maximum gain allowed before peaks hit ceiling
-  const maxGainDB = ceilingDB - currentPeakDB;
+  // Calculate what the peak will be after applying gain
+  const projectedPeakDB = currentPeakDB + lufsGainDB;
+  const ceilingLinear = Math.pow(10, ceilingDB / 20);
 
-  // Use the smaller of the two gains to prevent clipping
-  const actualGainDB = Math.min(lufsGainDB, maxGainDB);
-  const gainLinear = Math.pow(10, actualGainDB / 20);
+  console.log('[LUFS] Applying gain:', lufsGainDB.toFixed(2), 'dB');
 
-  if (actualGainDB < lufsGainDB) {
-    console.log('[LUFS] Gain limited by peak ceiling:', actualGainDB.toFixed(2), 'dB (wanted', lufsGainDB.toFixed(2), 'dB)');
-    console.log('[LUFS] Resulting LUFS will be:', (currentLUFS + actualGainDB).toFixed(2), 'LUFS instead of', targetLUFS, 'LUFS');
-  } else {
-    console.log('[LUFS] Applying gain:', actualGainDB.toFixed(2), 'dB');
-  }
-
-  // Create buffer directly without OfflineAudioContext (more efficient for simple gain)
-  const normalizedBuffer = new AudioBuffer({
+  // Create buffer with gain applied
+  const gainedBuffer = new AudioBuffer({
     numberOfChannels: audioBuffer.numberOfChannels,
     length: audioBuffer.length,
     sampleRate: audioBuffer.sampleRate
@@ -233,13 +380,26 @@ function normalizeToLUFS(audioBuffer, targetLUFS = -14, ceilingDB = -1) {
 
   for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
     const input = audioBuffer.getChannelData(ch);
-    const output = normalizedBuffer.getChannelData(ch);
+    const output = gainedBuffer.getChannelData(ch);
     for (let i = 0; i < input.length; i++) {
       output[i] = input[i] * gainLinear;
     }
   }
 
-  return normalizedBuffer;
+  // If peaks will exceed ceiling, apply lookahead limiter
+  if (projectedPeakDB > ceilingDB) {
+    console.log('[LUFS] Projected peak:', projectedPeakDB.toFixed(2), 'dBTP exceeds ceiling, applying limiter');
+    const limitedBuffer = applyLookaheadLimiter(gainedBuffer, ceilingLinear, 3, 100);
+
+    // Verify final levels
+    const finalPeakDB = findTruePeak(limitedBuffer);
+    const finalLUFS = measureLUFS(limitedBuffer);
+    console.log('[LUFS] After limiting - Peak:', finalPeakDB.toFixed(2), 'dBTP, LUFS:', finalLUFS.toFixed(2));
+
+    return limitedBuffer;
+  }
+
+  return gainedBuffer;
 }
 
 // ============================================================================
