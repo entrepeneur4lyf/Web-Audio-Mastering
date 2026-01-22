@@ -161,6 +161,24 @@
             <div class="overload-indicator" id="overloadIndicator">CLIP</div>
           </div>
 
+          <!-- EQ Visualizer -->
+          <div class="eq-controls">
+            <label class="eq-toggle" title="Toggle frequency scale">
+              <input type="checkbox" id="eqScaleToggle" checked>
+              <span>Log scale</span>
+            </label>
+            <label class="eq-toggle" title="Smooth bar movement">
+              <input type="checkbox" id="eqSmoothToggle">
+              <span>Smooth</span>
+            </label>
+            <label class="eq-slider-control">
+              <span>Bars:</span>
+              <input type="range" id="eqBarsSlider" min="16" max="256" value="64" step="8">
+              <span id="eqBarsValue">64</span>
+            </label>
+          </div>
+          <canvas id="eqVisualizer" class="eq-visualizer"></canvas>
+
           <!-- Spectrogram Panel -->
           <div class="spectrogram-panel hidden" id="spectrogramContainer"
             style="margin-top: 15px; border-radius: 6px; overflow: hidden; height: 300px; background: #000; border: 1px solid #333;">

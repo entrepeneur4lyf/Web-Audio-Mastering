@@ -16,6 +16,60 @@
   --text-primary: #ffffff;
   --text-secondary: #a1a1a1;
   --text-muted: #666666;
+  
+  /* Meter / EQ palette (shared with LUFS bars) */
+  --meter-green: #22c55e;
+  --meter-yellow: #eab308;
+  --meter-red: #ef4444;
+  --eq-bg: #1a1a1a;
+
+/* EQ Visualizer Styles */
+.eq-visualizer {
+    width: 100%;
+    height: 120px;
+  background-color: var(--eq-bg);
+    display: block;
+    margin-top: 15px;
+    border-radius: 6px;
+    border: 1px solid #333;
+}
+
+  .eq-controls {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 16px;
+    margin-top: 8px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.eq-toggle input {
+    margin-right: 6px;
+    accent-color: var(--meter-green);
+}
+
+.eq-slider-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.eq-slider-control input[type="range"] {
+    width: 100px;
+    height: 4px;
+    accent-color: var(--meter-green);
+}
+
+.eq-slider-control span:last-child {
+    min-width: 30px;
+    text-align: right;
+    font-family: monospace;
+    width: 4%;
+    height: 100%;
+    background-color: rgba(0, 150, 255, 0.7);
+    margin: 0 1px;
+}
   --green: #22c55e;
   --green-bg: rgba(34, 197, 94, 0.1);
   --red: #ef4444;

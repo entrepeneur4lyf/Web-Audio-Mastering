@@ -116,6 +116,87 @@ let processingPromise = null; // Track processing for proper cancellation
 
 // ============================================================================
 // DOM Elements (File handling - UI controls in ./ui/ modules)
+import EQVisualizer from './lib/eq-visualizer.js';
+
+// EQ Visualizer Setup
+const eqVisualizer = new EQVisualizer('eqVisualizer');
+const eqScaleToggle = document.getElementById('eqScaleToggle');
+const eqSmoothToggle = document.getElementById('eqSmoothToggle');
+const eqBarsSlider = document.getElementById('eqBarsSlider');
+const eqBarsValue = document.getElementById('eqBarsValue');
+let eqVisualizerAnimationFrame = null;
+
+if (eqScaleToggle) {
+  eqScaleToggle.addEventListener('change', (e) => {
+    const mode = e.target.checked ? 'log' : 'linear';
+    eqVisualizer.setScale(mode);
+  });
+}
+
+if (eqSmoothToggle) {
+  eqSmoothToggle.addEventListener('change', (e) => {
+    eqVisualizer.setSmoothing(e.target.checked);
+  });
+}
+
+if (eqBarsSlider && eqBarsValue) {
+  eqBarsSlider.addEventListener('input', (e) => {
+    const value = e.target.value;
+    eqBarsValue.textContent = value;
+    eqVisualizer.setBars(value);
+  });
+}
+
+function startEQVisualizer() {
+  if (!audioNodes.analyser || eqVisualizerAnimationFrame) {
+    console.log('EQ Visualizer start skipped:', { 
+      hasAnalyser: !!audioNodes.analyser, 
+      alreadyRunning: !!eqVisualizerAnimationFrame 
+    });
+    return;
+  }
+  
+  // Set the sample rate from the audio context
+  if (audioNodes.context) {
+    eqVisualizer.setSampleRate(audioNodes.context.sampleRate);
+  }
+  
+  const bufferLength = audioNodes.analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  console.log('EQ Visualizer started with buffer length:', bufferLength);
+  
+   let frameCount = 0;
+  function updateEQVisualizer() {
+    if (!audioNodes.analyser) {
+      stopEQVisualizer();
+      return;
+    }
+    
+    audioNodes.analyser.getByteFrequencyData(dataArray);
+   
+     // Debug: log every 60 frames
+     if (frameCount % 60 === 0) {
+       const sum = dataArray.reduce((a, b) => a + b, 0);
+       const avg = sum / dataArray.length;
+       console.log('EQ Visualizer frame', frameCount, 'avg magnitude:', avg.toFixed(2));
+     }
+     frameCount++;
+   
+    eqVisualizer.draw(dataArray);
+    eqVisualizerAnimationFrame = requestAnimationFrame(updateEQVisualizer);
+  }
+  
+  updateEQVisualizer();
+}
+
+function stopEQVisualizer() {
+  if (eqVisualizerAnimationFrame) {
+    cancelAnimationFrame(eqVisualizerAnimationFrame);
+    eqVisualizerAnimationFrame = null;
+  }
+  eqVisualizer.clear();
+}
+
 // ============================================================================
 
 const fileInput = document.getElementById('fileInput'); // Browser file input
@@ -192,9 +273,10 @@ if (spectroBtn && spectrogramContainer) {
 }
 
 async function cleanupAudioContext() {
-  // Stop spectrogram
+  // Stop spectrogram and EQ visualizer
   spectrogram.stop();
   spectrogram.analyser = null;
+  stopEQVisualizer();
 
   // Destroy WaveSurfer first - it may hold references to AudioContext
   destroyWaveSurfer();
@@ -241,6 +323,9 @@ function createAudioChain() {
   if (!spectrogramContainer.classList.contains('hidden')) {
     spectrogram.start();
   }
+
+  // Start EQ visualizer
+  startEQVisualizer();
 
   audioNodes.analyserL = ctx.createAnalyser();
   audioNodes.analyserL.fftSize = 2048;
@@ -714,6 +799,12 @@ function scheduleRenderToCache() {
  */
 function startMeterAnimation() {
   startMeter(audioNodes.analyserL, audioNodes.analyserR, () => playerState.isPlaying);
+ 
+   // Ensure EQ visualizer is running when playback starts
+   if (!eqVisualizerAnimationFrame && audioNodes.analyser) {
+     console.log('Starting EQ visualizer from startMeterAnimation');
+     startEQVisualizer();
+   }
 }
 
 /**
