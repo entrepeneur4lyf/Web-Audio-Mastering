@@ -1,4 +1,4 @@
-# Web Audio Mastering - Elektra Turner's Fork
+# Web Audio Mastering
 
 A desktop app for mastering AI-generated music (Suno, Udio, etc.) or any other audio to streaming-ready quality.
 
