@@ -9,9 +9,18 @@ import { applyFinalFilters } from '../lib/dsp/final-filters.js';
 // WAV Encoding
 // ============================================================================
 
+const DITHER_BUFFER_SIZE = 256;
+const ditherBuffer = new Float32Array(DITHER_BUFFER_SIZE);
+for (let i = 0; i < DITHER_BUFFER_SIZE; i++) {
+  ditherBuffer[i] = (Math.random() + Math.random()) - 1;
+}
+let ditherIndex = 0;
+
 function triangularDither() {
   // TPDF in integer (LSB) domain: [-1, 1]
-  return (Math.random() + Math.random()) - 1;
+  const dither = ditherBuffer[ditherIndex];
+  ditherIndex = (ditherIndex + 1) % DITHER_BUFFER_SIZE;
+  return dither;
 }
 
 /**
