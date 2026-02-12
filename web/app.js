@@ -1422,22 +1422,21 @@ async function processAudio() {
         let exportBuffer = result.audioBuffer;
         if (exportBuffer.sampleRate !== parsedSampleRate) {
           updateProgress(83, `Resampling to ${parsedSampleRate / 1000}kHz...`);
-          try {
-            exportBuffer = await resampleAudioBuffer(exportBuffer, parsedSampleRate);
-          } catch (err) {
-            console.error('Resampling failed, using original buffer', err);
-          }
+        let exportBuffer = result.audioBuffer;
+        if (exportBuffer.sampleRate !== parsedSampleRate) {
+          updateProgress(86, `Resampling to ${parsedSampleRate / 1000}kHz...`);
+          exportBuffer = await resampleAudioBuffer(exportBuffer, parsedSampleRate);
         }
         if (processingCancelled) {
           throw new Error('Cancelled');
         }
 
-        updateProgress(85, 'Encoding WAV...');
+        updateProgress(88, 'Encoding WAV...');
         // Yield so the UI can repaint before encoding begins.
         await new Promise(resolve => setTimeout(resolve, 0));
 
         outputData = await encodeWAVAsync(exportBuffer, parsedSampleRate, parsedBitDepth, {
-          onProgress: (p) => updateProgress(Math.round(85 + p * 10), 'Encoding WAV...'),
+          onProgress: (p) => updateProgress(Math.round(88 + p * 10), 'Encoding WAV...'),
           shouldCancel: () => processingCancelled
         });
       } catch (workerErr) {
