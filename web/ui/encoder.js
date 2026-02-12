@@ -9,6 +9,11 @@ import { applyFinalFilters } from '../lib/dsp/final-filters.js';
 // WAV Encoding
 // ============================================================================
 
+function triangularDither() {
+  // TPDF in integer (LSB) domain: [-1, 1]
+  return (Math.random() + Math.random()) - 1;
+}
+
 /**
  * Encode an AudioBuffer to WAV format (supports 16-bit and 24-bit)
  * @param {AudioBuffer} audioBuffer - Source audio buffer
@@ -18,8 +23,9 @@ import { applyFinalFilters } from '../lib/dsp/final-filters.js';
  */
 export function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
   const numChannels = audioBuffer.numberOfChannels;
+  const safeBitDepth = bitDepth === 24 ? 24 : 16;
   const sampleRate = targetSampleRate || audioBuffer.sampleRate;
-  const bytesPerSample = bitDepth / 8;
+  const bytesPerSample = safeBitDepth / 8;
 
   const channelData = [];
   for (let ch = 0; ch < numChannels; ch++) {
@@ -47,22 +53,27 @@ export function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
   view.setUint16(32, numChannels * bytesPerSample, true);
-  view.setUint16(34, bitDepth, true);
+  view.setUint16(34, safeBitDepth, true);
   writeString(36, 'data');
   view.setUint32(40, dataSize, true);
 
   let offset = 44;
-  const maxVal = bitDepth === 16 ? 32767 : 8388607;
+  const maxVal = safeBitDepth === 16 ? 32767 : 8388607;
 
   for (let i = 0; i < numSamples; i++) {
     for (let ch = 0; ch < numChannels; ch++) {
       const sample = Math.max(-1, Math.min(1, channelData[ch][i]));
-      const intSample = Math.round(sample * maxVal);
+      const scaled = sample * maxVal;
+      // Dither is only needed for 16-bit export where quantization noise is audible.
+      const intSample = safeBitDepth === 16
+        ? Math.round(scaled + triangularDither())
+        : Math.round(scaled);
 
-      if (bitDepth === 16) {
-        view.setInt16(offset, intSample, true);
+      if (safeBitDepth === 16) {
+        const clampedSample = Math.max(-32768, Math.min(32767, intSample));
+        view.setInt16(offset, clampedSample, true);
         offset += 2;
-      } else if (bitDepth === 24) {
+      } else if (safeBitDepth === 24) {
         // Clamp to prevent overflow in bitwise operations
         const clampedSample = Math.max(-8388607, Math.min(8388607, intSample));
         view.setUint8(offset, clampedSample & 0xFF);
@@ -145,10 +156,15 @@ export async function encodeWAVAsync(audioBuffer, targetSampleRate, bitDepth, op
     for (let s = i; s < end; s++) {
       for (let ch = 0; ch < numChannels; ch++) {
         const sample = Math.max(-1, Math.min(1, channelData[ch][s]));
-        const intSample = Math.round(sample * maxVal);
+        const scaled = sample * maxVal;
+        // Dither is only needed for 16-bit export where quantization noise is audible.
+        const intSample = safeBitDepth === 16
+          ? Math.round(scaled + triangularDither())
+          : Math.round(scaled);
 
         if (safeBitDepth === 16) {
-          view.setInt16(offset, intSample, true);
+          const clampedSample = Math.max(-32768, Math.min(32767, intSample));
+          view.setInt16(offset, clampedSample, true);
           offset += 2;
         } else {
           const clampedSample = Math.max(-8388607, Math.min(8388607, intSample));

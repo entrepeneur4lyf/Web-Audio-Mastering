@@ -162,6 +162,30 @@ function applyDSPChain(buffer, settings, onProgress = null, logPrefix = '[DSP]')
   return { buffer: renderedBuffer, measuredLufs };
 }
 
+/**
+ * Resample an AudioBuffer to a target sample rate.
+ * Uses OfflineAudioContext so output sample data and WAV header stay aligned.
+ * @param {AudioBuffer} sourceBuffer - Source audio buffer
+ * @param {number} targetSampleRate - Target sample rate in Hz
+ * @returns {Promise<AudioBuffer>} Resampled buffer (or original if unchanged)
+ */
+export async function resampleAudioBuffer(sourceBuffer, targetSampleRate) {
+  if (!sourceBuffer || !targetSampleRate || sourceBuffer.sampleRate === targetSampleRate) {
+    return sourceBuffer;
+  }
+
+  const numChannels = sourceBuffer.numberOfChannels;
+  const numSamples = Math.ceil(sourceBuffer.duration * targetSampleRate);
+  const offlineCtx = new OfflineAudioContext(numChannels, numSamples, targetSampleRate);
+  const source = offlineCtx.createBufferSource();
+
+  source.buffer = sourceBuffer;
+  source.connect(offlineCtx.destination);
+  source.start(0);
+
+  return offlineCtx.startRendering();
+}
+
 // ============================================================================
 // Offline Rendering (Export)
 // ============================================================================
