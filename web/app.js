@@ -1422,7 +1422,11 @@ async function processAudio() {
         let exportBuffer = result.audioBuffer;
         if (exportBuffer.sampleRate !== parsedSampleRate) {
           updateProgress(83, `Resampling to ${parsedSampleRate / 1000}kHz...`);
-          exportBuffer = await resampleAudioBuffer(exportBuffer, parsedSampleRate);
+          try {
+            exportBuffer = await resampleAudioBuffer(exportBuffer, parsedSampleRate);
+          } catch (err) {
+            console.error('Resampling failed, using original buffer', err);
+          }
         }
         if (processingCancelled) {
           throw new Error('Cancelled');
