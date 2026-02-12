@@ -3,8 +3,6 @@
  * WAV encoding and offline audio node creation
  */
 
-import { applyFinalFilters } from '../lib/dsp/final-filters.js';
-
 // ============================================================================
 // WAV Encoding
 // ============================================================================
@@ -37,6 +35,7 @@ function clamp(value, min, max) {
 
 function resolveDitherMode(requestedMode, safeBitDepth) {
   if (safeBitDepth !== 16) return 'none';
+  if (requestedMode === 'none') return 'none';
   return requestedMode === 'noise-shaped' ? 'noise-shaped' : 'tpdf';
 }
 

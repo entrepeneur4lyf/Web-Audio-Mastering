@@ -22,10 +22,12 @@ import {
   ceilingValueDb,
   targetLufsDb,
   getCurrentSettings,
+  getExportSettings,
   initFaders,
   faders,
   setupEQPresets,
   setupOutputPresets,
+  updateOutputPresetButtons,
   setTargetLufs,
   // Meters
   meterState,
@@ -1365,33 +1367,10 @@ async function processAudio() {
     return;
   }
 
-  const settings = {
-    normalizeLoudness: normalizeLoudness.checked,
-    targetLufs: parseInt(targetLufsSlider.value),
-    truePeakLimit: truePeakLimit.checked,
-    truePeakCeiling: ceilingValueDb,
-    cleanLowEnd: cleanLowEnd.checked,
-    glueCompression: glueCompression.checked,
-    deharsh: deharsh.checked,
-    stereoWidth: parsedStereoWidth,
-    centerBass: centerBass.checked,
-    cutMud: cutMud.checked,
-    addAir: addAir.checked,
-    tapeWarmth: tapeWarmth.checked,
-    autoLevel: autoLevel.checked,
-    addPunch: addPunch.checked,
-    sampleRate: parsedSampleRate,
-    bitDepth: parsedBitDepth,
-    ditherMode: parsedBitDepth === 16
-      ? (ditherNoiseShaping?.checked ? 'noise-shaped' : 'tpdf')
-      : 'none',
-    inputGain: inputGainValue,
-    eqLow: eqValues.low,
-    eqLowMid: eqValues.lowMid,
-    eqMid: eqValues.mid,
-    eqHighMid: eqValues.highMid,
-    eqHigh: eqValues.high
-  };
+  const settings = getExportSettings();
+  settings.sampleRate = parsedSampleRate;
+  settings.bitDepth = parsedBitDepth;
+  settings.stereoWidth = parsedStereoWidth;
 
   const updateProgress = (percent, text) => {
     showLoadingModal(text || 'Rendering...', percent, true);
@@ -1458,11 +1437,15 @@ async function processAudio() {
           throw workerErr;
         }
         console.warn('[Export] Worker render failed, falling back to main thread render:', workerErr);
-        outputData = await renderOffline(fileState.originalBuffer, settings, updateProgress);
+        outputData = await renderOffline(fileState.originalBuffer, settings, updateProgress, {
+          shouldCancel: () => processingCancelled
+        });
       }
     } else {
       // Fallback (Main Thread)
-      outputData = await renderOffline(fileState.originalBuffer, settings, updateProgress);
+      outputData = await renderOffline(fileState.originalBuffer, settings, updateProgress, {
+        shouldCancel: () => processingCancelled
+      });
     }
 
     if (processingCancelled) {
@@ -1662,33 +1645,10 @@ targetLufsSlider.addEventListener('input', () => {
   }, 300); // 300ms debounce
 });
 
-// outputPresets imported from ./lib/presets/index.js
-
-document.querySelectorAll('.output-preset-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const preset = outputPresets[btn.dataset.preset];
-    if (preset) {
-      sampleRate.value = preset.sampleRate;
-      bitDepth.value = preset.bitDepth;
-      updateDitherControlState();
-
-      document.querySelectorAll('.output-preset-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    }
-  });
-});
-
 [sampleRate, bitDepth].forEach(el => {
   el.addEventListener('change', () => {
     updateDitherControlState();
-    const currentRate = parseInt(sampleRate.value);
-    const currentDepth = parseInt(bitDepth.value);
-
-    document.querySelectorAll('.output-preset-btn').forEach(btn => {
-      const preset = outputPresets[btn.dataset.preset];
-      const isMatch = preset.sampleRate === currentRate && preset.bitDepth === currentDepth;
-      btn.classList.toggle('active', isMatch);
-    });
+    updateOutputPresetButtons(outputPresets);
   });
 });
 
@@ -1819,8 +1779,12 @@ initFaders({
 setupEQPresets(eqPresets, updateEQ);
 
 // Setup output format presets
-setupOutputPresets(outputPresets);
+setupOutputPresets(outputPresets, () => {
+  updateDitherControlState();
+  updateOutputPresetButtons(outputPresets);
+});
 updateDitherControlState();
+updateOutputPresetButtons(outputPresets);
 
 updateChecklist();
 

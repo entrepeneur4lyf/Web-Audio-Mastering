@@ -195,9 +195,18 @@ export async function resampleAudioBuffer(sourceBuffer, targetSampleRate) {
  * @param {AudioBuffer} sourceBuffer - Source audio buffer
  * @param {Object} settings - Processing settings
  * @param {Function} onProgress - Progress callback (0-100)
+ * @param {Object} options - Additional render options
+ * @param {Function} options.shouldCancel - Optional cancellation predicate
  * @returns {Promise<Uint8Array>} WAV file data
  */
-export async function renderOffline(sourceBuffer, settings, onProgress) {
+export async function renderOffline(sourceBuffer, settings, onProgress, options = {}) {
+  const { shouldCancel = null } = options || {};
+  const throwIfCancelled = () => {
+    if (shouldCancel && shouldCancel()) {
+      throw new Error('Cancelled');
+    }
+  };
+
   const targetSampleRate = settings.sampleRate || 44100;
 
   console.log('[Offline Render] Starting...', {
@@ -210,6 +219,7 @@ export async function renderOffline(sourceBuffer, settings, onProgress) {
   const { offlineCtx, source } = createRenderContext(sourceBuffer, settings, targetSampleRate);
   source.start(0);
   if (onProgress) onProgress(10);
+  throwIfCancelled();
 
   // Render through Web Audio nodes
   let renderPhaseTimer = null;
@@ -231,6 +241,7 @@ export async function renderOffline(sourceBuffer, settings, onProgress) {
   } finally {
     if (renderPhaseTimer) clearInterval(renderPhaseTimer);
   }
+  throwIfCancelled();
   if (onProgress) onProgress(15);
   // Allow the UI to repaint before the synchronous DSP stages begin.
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -240,6 +251,7 @@ export async function renderOffline(sourceBuffer, settings, onProgress) {
     if (onProgress) onProgress(15 + p * 60);
   }, '[Offline Render]');
   renderedBuffer = dspResult.buffer;
+  throwIfCancelled();
 
   if (onProgress) onProgress(75);
   // Allow the UI to repaint before WAV encoding begins.
@@ -250,7 +262,8 @@ export async function renderOffline(sourceBuffer, settings, onProgress) {
     onProgress: (p) => {
       if (onProgress) onProgress(75 + p * 15);
     },
-    ditherMode: settings.ditherMode
+    ditherMode: settings.ditherMode,
+    shouldCancel: shouldCancel
   });
   if (onProgress) onProgress(90);
 

@@ -44,7 +44,6 @@ const cleanLowEnd = document.getElementById('cleanLowEnd');
 const glueCompression = document.getElementById('glueCompression');
 const deharsh = document.getElementById('deharsh');
 const stereoWidthSlider = document.getElementById('stereoWidth');
-const stereoWidthValue = document.getElementById('stereoWidthValue');
 const centerBass = document.getElementById('centerBass');
 const cutMud = document.getElementById('cutMud');
 const addAir = document.getElementById('addAir');
@@ -55,7 +54,6 @@ const sampleRate = document.getElementById('sampleRate');
 const bitDepth = document.getElementById('bitDepth');
 const ditherNoiseShaping = document.getElementById('ditherNoiseShaping');
 const targetLufsSlider = document.getElementById('targetLufs');
-const targetLufsValueEl = document.getElementById('targetLufsValue');
 
 // ============================================================================
 // Settings Getters
@@ -230,94 +228,6 @@ export function setTargetLufs(value) {
   targetLufsDb = value;
 }
 
-// ============================================================================
-// Setup Functions
-// ============================================================================
-
-/**
- * Setup all control event listeners
- * @param {Object} handlers - Event handler callbacks
- */
-export function setupControlListeners(handlers = {}) {
-  const {
-    onAudioChainChange,
-    onProcessEffects,
-    onNormalizationChange,
-    onStereoWidthChange,
-    onTargetLufsChange,
-    onOutputPresetChange
-  } = handlers;
-
-  // Toggle handlers that trigger audio chain updates
-  const chainToggles = [truePeakLimit, cleanLowEnd, glueCompression, deharsh, centerBass, cutMud, addAir, tapeWarmth, autoLevel, addPunch];
-  chainToggles.forEach(el => {
-    if (el) {
-      el.addEventListener('change', () => {
-        if (onAudioChainChange) onAudioChainChange();
-      });
-    }
-  });
-
-  // Toggles that require re-processing the buffer (offline effects)
-  const processToggles = [addAir, addPunch, deharsh];
-  processToggles.forEach(el => {
-    if (el) {
-      el.addEventListener('change', () => {
-        if (onProcessEffects) onProcessEffects();
-      });
-    }
-  });
-
-  // Normalization toggle (special handling for buffer switching)
-  if (normalizeLoudness) {
-    normalizeLoudness.addEventListener('change', () => {
-      if (onNormalizationChange) onNormalizationChange(normalizeLoudness.checked);
-    });
-  }
-
-  // Stereo width slider
-  if (stereoWidthSlider && stereoWidthValue) {
-    stereoWidthSlider.addEventListener('input', () => {
-      stereoWidthValue.textContent = `${stereoWidthSlider.value}%`;
-      if (onStereoWidthChange) onStereoWidthChange(parseInt(stereoWidthSlider.value));
-    });
-  }
-
-  // Target LUFS slider
-  if (targetLufsSlider && targetLufsValueEl) {
-    // Visual update on drag (lightweight)
-    targetLufsSlider.addEventListener('input', () => {
-      const val = parseFloat(targetLufsSlider.value);
-      targetLufsValueEl.textContent = `${val} LUFS`;
-    });
-
-    // Processing update on release (heavy) - using pointerup/keyup for explicit release detection
-    const handleRelease = () => {
-      const val = parseFloat(targetLufsSlider.value);
-      // Only update if value actually changed to avoid redundant processing
-      if (val !== targetLufsDb) {
-        targetLufsDb = val;
-        if (onTargetLufsChange) onTargetLufsChange(val);
-      }
-    };
-
-    targetLufsSlider.addEventListener('pointerup', handleRelease);
-    targetLufsSlider.addEventListener('keyup', handleRelease);
-    targetLufsSlider.addEventListener('change', handleRelease); // Fallback, but guarded by value check
-  }
-
-  // Output format presets
-  if (sampleRate && bitDepth) {
-    [sampleRate, bitDepth].forEach(el => {
-      el.addEventListener('change', () => {
-        const currentRate = parseInt(sampleRate.value);
-        const currentDepth = parseInt(bitDepth.value);
-        if (onOutputPresetChange) onOutputPresetChange(currentRate, currentDepth);
-      });
-    });
-  }
-}
-
 /**
  * Setup EQ preset buttons
  * @param {Object} presets - EQ presets object
@@ -339,8 +249,9 @@ export function setupEQPresets(presets, onEQChange) {
 /**
  * Setup output format preset buttons
  * @param {Object} presets - Output presets object
+ * @param {Function} onPresetApplied - Optional callback after applying a preset
  */
-export function setupOutputPresets(presets) {
+export function setupOutputPresets(presets, onPresetApplied = null) {
   document.querySelectorAll('.output-preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const preset = presets[btn.dataset.preset];
@@ -349,6 +260,7 @@ export function setupOutputPresets(presets) {
         bitDepth.value = preset.bitDepth;
         document.querySelectorAll('.output-preset-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        if (onPresetApplied) onPresetApplied(preset);
       }
     });
   });
