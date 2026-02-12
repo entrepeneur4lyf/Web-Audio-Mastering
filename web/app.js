@@ -158,6 +158,8 @@ const miniFormat = document.getElementById('mini-format');
 const normalizeLoudness = document.getElementById('normalizeLoudness');
 const sampleRate = document.getElementById('sampleRate');
 const bitDepth = document.getElementById('bitDepth');
+const ditherNoiseShaping = document.getElementById('ditherNoiseShaping');
+const ditherNoiseShapingRow = document.getElementById('ditherNoiseShapingRow');
 const targetLufsSlider = document.getElementById('targetLufs');
 const targetLufsValue = document.getElementById('targetLufsValue');
 const stereoWidthSlider = document.getElementById('stereoWidth');
@@ -190,6 +192,14 @@ if (spectroBtn && spectrogramContainer) {
       spectrogram.stop();
     }
   });
+}
+
+function updateDitherControlState() {
+  if (!bitDepth || !ditherNoiseShaping || !ditherNoiseShapingRow) return;
+
+  const is16Bit = (parseInt(bitDepth.value) || 16) === 16;
+  ditherNoiseShaping.disabled = !is16Bit;
+  ditherNoiseShapingRow.classList.toggle('disabled', !is16Bit);
 }
 
 async function cleanupAudioContext() {
@@ -1372,6 +1382,9 @@ async function processAudio() {
     addPunch: addPunch.checked,
     sampleRate: parsedSampleRate,
     bitDepth: parsedBitDepth,
+    ditherMode: parsedBitDepth === 16
+      ? (ditherNoiseShaping?.checked ? 'noise-shaped' : 'tpdf')
+      : 'none',
     inputGain: inputGainValue,
     eqLow: eqValues.low,
     eqLowMid: eqValues.lowMid,
@@ -1437,7 +1450,8 @@ async function processAudio() {
 
         outputData = await encodeWAVAsync(exportBuffer, parsedSampleRate, parsedBitDepth, {
           onProgress: (p) => updateProgress(Math.round(encodeProgressStart + p * encodeProgressSpan), 'Encoding WAV...'),
-          shouldCancel: () => processingCancelled
+          shouldCancel: () => processingCancelled,
+          ditherMode: settings.ditherMode
         });
       } catch (workerErr) {
         if (processingCancelled || workerErr?.message === 'Cancelled') {
@@ -1656,6 +1670,7 @@ document.querySelectorAll('.output-preset-btn').forEach(btn => {
     if (preset) {
       sampleRate.value = preset.sampleRate;
       bitDepth.value = preset.bitDepth;
+      updateDitherControlState();
 
       document.querySelectorAll('.output-preset-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -1665,6 +1680,7 @@ document.querySelectorAll('.output-preset-btn').forEach(btn => {
 
 [sampleRate, bitDepth].forEach(el => {
   el.addEventListener('change', () => {
+    updateDitherControlState();
     const currentRate = parseInt(sampleRate.value);
     const currentDepth = parseInt(bitDepth.value);
 
@@ -1804,6 +1820,7 @@ setupEQPresets(eqPresets, updateEQ);
 
 // Setup output format presets
 setupOutputPresets(outputPresets);
+updateDitherControlState();
 
 updateChecklist();
 

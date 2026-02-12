@@ -621,6 +621,11 @@ body {
   color: var(--text-primary);
 }
 
+.toggle-row.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .toggle-row:last-child {
   border-bottom: none;
 }

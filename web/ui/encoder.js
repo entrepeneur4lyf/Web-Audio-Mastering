@@ -15,12 +15,29 @@ for (let i = 0; i < DITHER_BUFFER_SIZE; i++) {
   ditherBuffer[i] = (Math.random() + Math.random()) - 1;
 }
 let ditherIndex = 0;
+const NOISE_SHAPING_COEFF = 0.85;
 
 function triangularDither() {
   // TPDF in integer (LSB) domain: [-1, 1]
   const dither = ditherBuffer[ditherIndex];
-  ditherIndex = (ditherIndex + 1) % DITHER_BUFFER_SIZE;
+  ditherIndex += 1;
+  if (ditherIndex >= DITHER_BUFFER_SIZE) {
+    // Refresh to avoid repeating a short deterministic noise pattern.
+    for (let i = 0; i < DITHER_BUFFER_SIZE; i++) {
+      ditherBuffer[i] = (Math.random() + Math.random()) - 1;
+    }
+    ditherIndex = 0;
+  }
   return dither;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolveDitherMode(requestedMode, safeBitDepth) {
+  if (safeBitDepth !== 16) return 'none';
+  return requestedMode === 'noise-shaped' ? 'noise-shaped' : 'tpdf';
 }
 
 /**
@@ -28,13 +45,16 @@ function triangularDither() {
  * @param {AudioBuffer} audioBuffer - Source audio buffer
  * @param {number} targetSampleRate - Target sample rate
  * @param {number} bitDepth - Bit depth (16 or 24)
+ * @param {Object} [options]
+ * @param {'tpdf'|'noise-shaped'|'none'} [options.ditherMode]
  * @returns {Uint8Array} WAV file data
  */
-export function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
+export function encodeWAV(audioBuffer, targetSampleRate, bitDepth, options = {}) {
   const numChannels = audioBuffer.numberOfChannels;
   const safeBitDepth = bitDepth === 24 ? 24 : 16;
   const sampleRate = targetSampleRate || audioBuffer.sampleRate;
   const bytesPerSample = safeBitDepth / 8;
+  const ditherMode = resolveDitherMode(options?.ditherMode, safeBitDepth);
 
   const channelData = [];
   for (let ch = 0; ch < numChannels; ch++) {
@@ -68,23 +88,36 @@ export function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
 
   let offset = 44;
   const maxVal = safeBitDepth === 16 ? 32767 : 8388607;
+  const noiseShapeError = ditherMode === 'noise-shaped' ? new Float32Array(numChannels) : null;
 
   for (let i = 0; i < numSamples; i++) {
     for (let ch = 0; ch < numChannels; ch++) {
       const sample = Math.max(-1, Math.min(1, channelData[ch][i]));
       const scaled = sample * maxVal;
-      // Dither is only needed for 16-bit export where quantization noise is audible.
-      const intSample = safeBitDepth === 16
-        ? Math.round(scaled + triangularDither())
-        : Math.round(scaled);
 
       if (safeBitDepth === 16) {
-        const clampedSample = Math.max(-32768, Math.min(32767, intSample));
+        let quantizeInput = scaled;
+        if (ditherMode === 'noise-shaped' && noiseShapeError) {
+          quantizeInput += noiseShapeError[ch];
+        }
+        if (ditherMode !== 'none') {
+          quantizeInput += triangularDither();
+        }
+
+        const intSample = Math.round(quantizeInput);
+        const clampedSample = clamp(intSample, -32768, 32767);
         view.setInt16(offset, clampedSample, true);
+
+        if (ditherMode === 'noise-shaped' && noiseShapeError) {
+          const quantError = quantizeInput - clampedSample;
+          noiseShapeError[ch] = clamp(quantError * NOISE_SHAPING_COEFF, -2, 2);
+        }
+
         offset += 2;
       } else if (safeBitDepth === 24) {
         // Clamp to prevent overflow in bitwise operations
-        const clampedSample = Math.max(-8388607, Math.min(8388607, intSample));
+        const intSample = Math.round(scaled);
+        const clampedSample = clamp(intSample, -8388607, 8388607);
         view.setUint8(offset, clampedSample & 0xFF);
         view.setUint8(offset + 1, (clampedSample >> 8) & 0xFF);
         view.setUint8(offset + 2, (clampedSample >> 16) & 0xFF);
@@ -105,19 +138,22 @@ export function encodeWAV(audioBuffer, targetSampleRate, bitDepth) {
  * @param {(progress: number) => void} [options.onProgress] - Progress callback (0..1)
  * @param {() => boolean} [options.shouldCancel] - Return true to abort encoding
  * @param {number} [options.chunkSize] - Samples per chunk before yielding
+ * @param {'tpdf'|'noise-shaped'|'none'} [options.ditherMode] - 16-bit quantization mode
  * @returns {Promise<Uint8Array>}
  */
 export async function encodeWAVAsync(audioBuffer, targetSampleRate, bitDepth, options = {}) {
   const {
     onProgress = null,
     shouldCancel = null,
-    chunkSize = 65536
+    chunkSize = 65536,
+    ditherMode: requestedDitherMode = 'tpdf'
   } = options || {};
 
   const safeBitDepth = bitDepth === 24 ? 24 : 16;
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = targetSampleRate || audioBuffer.sampleRate;
   const bytesPerSample = safeBitDepth / 8;
+  const ditherMode = resolveDitherMode(requestedDitherMode, safeBitDepth);
 
   const channelData = [];
   for (let ch = 0; ch < numChannels; ch++) {
@@ -152,6 +188,7 @@ export async function encodeWAVAsync(audioBuffer, targetSampleRate, bitDepth, op
   const maxVal = safeBitDepth === 16 ? 32767 : 8388607;
   let offset = 44;
   const safeChunkSize = Math.max(1024, Number(chunkSize) || 65536);
+  const noiseShapeError = ditherMode === 'noise-shaped' ? new Float32Array(numChannels) : null;
 
   const yieldToUI = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -166,17 +203,29 @@ export async function encodeWAVAsync(audioBuffer, targetSampleRate, bitDepth, op
       for (let ch = 0; ch < numChannels; ch++) {
         const sample = Math.max(-1, Math.min(1, channelData[ch][s]));
         const scaled = sample * maxVal;
-        // Dither is only needed for 16-bit export where quantization noise is audible.
-        const intSample = safeBitDepth === 16
-          ? Math.round(scaled + triangularDither())
-          : Math.round(scaled);
 
         if (safeBitDepth === 16) {
-          const clampedSample = Math.max(-32768, Math.min(32767, intSample));
+          let quantizeInput = scaled;
+          if (ditherMode === 'noise-shaped' && noiseShapeError) {
+            quantizeInput += noiseShapeError[ch];
+          }
+          if (ditherMode !== 'none') {
+            quantizeInput += triangularDither();
+          }
+
+          const intSample = Math.round(quantizeInput);
+          const clampedSample = clamp(intSample, -32768, 32767);
           view.setInt16(offset, clampedSample, true);
+
+          if (ditherMode === 'noise-shaped' && noiseShapeError) {
+            const quantError = quantizeInput - clampedSample;
+            noiseShapeError[ch] = clamp(quantError * NOISE_SHAPING_COEFF, -2, 2);
+          }
+
           offset += 2;
         } else {
-          const clampedSample = Math.max(-8388607, Math.min(8388607, intSample));
+          const intSample = Math.round(scaled);
+          const clampedSample = clamp(intSample, -8388607, 8388607);
           view.setUint8(offset, clampedSample & 0xFF);
           view.setUint8(offset + 1, (clampedSample >> 8) & 0xFF);
           view.setUint8(offset + 2, (clampedSample >> 16) & 0xFF);

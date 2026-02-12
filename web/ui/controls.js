@@ -53,6 +53,7 @@ const autoLevel = document.getElementById('autoLevel');
 const addPunch = document.getElementById('addPunch');
 const sampleRate = document.getElementById('sampleRate');
 const bitDepth = document.getElementById('bitDepth');
+const ditherNoiseShaping = document.getElementById('ditherNoiseShaping');
 const targetLufsSlider = document.getElementById('targetLufs');
 const targetLufsValueEl = document.getElementById('targetLufsValue');
 
@@ -98,7 +99,10 @@ export function getExportSettings() {
   return {
     ...base,
     sampleRate: parseInt(sampleRate.value) || 44100,
-    bitDepth: parseInt(bitDepth.value) || 16
+    bitDepth: parseInt(bitDepth.value) || 16,
+    ditherMode: (parseInt(bitDepth.value) || 16) === 16
+      ? (ditherNoiseShaping?.checked ? 'noise-shaped' : 'tpdf')
+      : 'none'
   };
 }
 

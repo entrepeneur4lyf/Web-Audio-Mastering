@@ -249,7 +249,8 @@ export async function renderOffline(sourceBuffer, settings, onProgress) {
   const wavData = await encodeWAVAsync(renderedBuffer, targetSampleRate, settings.bitDepth || 16, {
     onProgress: (p) => {
       if (onProgress) onProgress(75 + p * 15);
-    }
+    },
+    ditherMode: settings.ditherMode
   });
   if (onProgress) onProgress(90);
 
