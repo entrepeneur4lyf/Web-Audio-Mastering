@@ -262,6 +262,7 @@ export class Fader {
       }
       const newValue = this.options.min + norm * (this.options.max - this.options.min);
       this.setValue(this.quantize(newValue), true);
+      this.options.onChangeEnd(this.value);
     });
 
     // Wheel
@@ -275,12 +276,14 @@ export class Fader {
         e.shiftKey
       );
       this.setValue(this.quantize(newValue), true);
+      this.options.onChangeEnd(this.value);
     }, { passive: false });
 
     // Double-click reset
     this.thumb.addEventListener('dblclick', () => {
       const resetValue = this.options.unit === 'dB' ? 0 : (this.options.min + this.options.max) / 2;
       this.setValue(resetValue, true);
+      this.options.onChangeEnd(this.value);
     });
   }
 

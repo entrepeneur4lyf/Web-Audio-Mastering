@@ -589,7 +589,8 @@ function updateInputGain() {
 
 // Debounce timer for cache render
 let cacheRenderTimeout = null;
-const CACHE_RENDER_DEBOUNCE_MS = 300;
+let cacheRenderQueued = false;
+const CACHE_RENDER_DEBOUNCE_MS = 500;
 
 // getCurrentSettings imported from ./ui/controls.js
 
@@ -614,13 +615,15 @@ function scheduleRenderToCache() {
 
   // Debounce the actual render
   cacheRenderTimeout = setTimeout(async () => {
+    cacheRenderTimeout = null;
     if (!fileState.originalBuffer) return;
     if (fileState.isRenderingCache) {
-      // Already rendering, schedule another after current completes
-      scheduleRenderToCache();
+      // Already rendering; remember to run one more pass when it completes.
+      cacheRenderQueued = true;
       return;
     }
 
+    cacheRenderQueued = false;
     fileState.isRenderingCache = true;
     console.log('[Cache] Starting render, version:', thisVersion);
 
@@ -644,13 +647,11 @@ function scheduleRenderToCache() {
             // Build a master-preview buffer that matches export (includes final limiter).
             'export',
             (progress, status) => {
-              // Show progress in modal and LUFS display
+              // Show progress in LUFS display
               const percent = Math.round(progress * 100);
               if (outputLufsDisplay && progress < 1) {
                 outputLufsDisplay.textContent = `${percent}%`;
               }
-              // Update modal progress (85-100% range for cache phase)
-              showLoadingModal('Building cache...', 85 + percent * 0.15);
             }
           );
           buffer = result.audioBuffer;
@@ -688,7 +689,6 @@ function scheduleRenderToCache() {
         // Enable playback now that cache is ready
         playBtn.disabled = false;
         stopBtn.disabled = false;
-        hideLoadingModal();
 
         console.log('[Cache] Render complete, version:', thisVersion, 'LUFS:', lufs.toFixed(1));
 
@@ -711,9 +711,12 @@ function scheduleRenderToCache() {
       // Still enable playback on error so user isn't stuck
       playBtn.disabled = false;
       stopBtn.disabled = false;
-      hideLoadingModal();
     } finally {
       fileState.isRenderingCache = false;
+      if (cacheRenderQueued && fileState.originalBuffer) {
+        cacheRenderQueued = false;
+        scheduleRenderToCache();
+      }
     }
   }, CACHE_RENDER_DEBOUNCE_MS);
 }
@@ -905,8 +908,8 @@ async function loadAudioFile(file) {
     // Show live indicators
     document.body.classList.add('audio-loaded');
 
-    // Show "Building cache" modal - stays visible until cache render completes
-    showLoadingModal('Building cache...', 85);
+    // Cache render now runs in the background; loading flow is complete here.
+    hideLoadingModal();
 
     return true;
   } catch (error) {
@@ -1524,7 +1527,7 @@ normalizeLoudness.addEventListener('change', () => {
   updateChecklist();
 });
 
-[truePeakLimit, cleanLowEnd, glueCompression, centerBass, cutMud, addAir, tapeWarmth, autoLevel, addPunch].forEach(el => {
+[truePeakLimit, cleanLowEnd, glueCompression, centerBass, cutMud, autoLevel].forEach(el => {
   el.addEventListener('change', () => {
     updateAudioChain();
     updateChecklist();
@@ -1536,6 +1539,7 @@ normalizeLoudness.addEventListener('change', () => {
 [deharsh, addAir, tapeWarmth, addPunch].forEach(el => {
   el.addEventListener('change', () => {
     processEffects();
+    updateChecklist();
   });
 });
 
@@ -1554,7 +1558,11 @@ levelMatchBtn.addEventListener('change', () => {
 stereoWidthSlider.addEventListener('input', () => {
   stereoWidthValue.textContent = `${stereoWidthSlider.value}%`;
   updateStereoWidth();
-  // Stereo width affects the master preview render, so rebuild cache.
+  // Live node update while dragging; defer cache rebuild to interaction commit.
+  updateAudioChain({ scheduleCache: false });
+});
+
+stereoWidthSlider.addEventListener('change', () => {
   updateAudioChain();
 });
 
@@ -1642,7 +1650,7 @@ targetLufsSlider.addEventListener('input', () => {
 
   lufsDebounceTimeout = setTimeout(() => {
     renormalizeAudio(newValue);
-  }, 300); // 300ms debounce
+  }, 500); // 500ms debounce
 });
 
 [sampleRate, bitDepth].forEach(el => {
@@ -1764,13 +1772,25 @@ window.addEventListener('beforeunload', () => {
 initFaders({
   onInputGainChange: (val) => {
     updateInputGain();
-    // Input gain affects the master preview render (pre-limiter), so rebuild cache.
+    // Keep live chain responsive while dragging; defer cache rebuild to commit.
+    updateAudioChain({ scheduleCache: false });
+  },
+  onInputGainChangeEnd: () => {
     updateAudioChain();
   },
-  onCeilingChange: (val) => updateAudioChain(),
+  onCeilingChange: () => {
+    // Live preview updates immediately; defer cache rebuild to commit.
+    updateAudioChain({ scheduleCache: false });
+  },
+  onCeilingChangeEnd: () => {
+    updateAudioChain();
+  },
   onEQChange: (eqVals) => {
     updateEQ();
-    // EQ affects the master preview render, so rebuild cache.
+    // Keep live chain responsive while dragging; defer cache rebuild to commit.
+    updateAudioChain({ scheduleCache: false });
+  },
+  onEQChangeEnd: () => {
     updateAudioChain();
   }
 });

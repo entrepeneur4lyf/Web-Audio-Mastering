@@ -112,8 +112,11 @@ export function getExportSettings() {
  * Initialize all faders
  * @param {Object} callbacks - Callback functions for fader changes
  * @param {Function} callbacks.onInputGainChange - Called when input gain changes
+ * @param {Function} callbacks.onInputGainChangeEnd - Called when input gain interaction commits
  * @param {Function} callbacks.onCeilingChange - Called when ceiling changes
+ * @param {Function} callbacks.onCeilingChangeEnd - Called when ceiling interaction commits
  * @param {Function} callbacks.onEQChange - Called when any EQ fader changes
+ * @param {Function} callbacks.onEQChangeEnd - Called when any EQ interaction commits
  */
 export function initFaders(callbacks = {}) {
   // Destroy old faders before creating new ones (prevents memory leaks on re-init)
@@ -139,6 +142,9 @@ export function initFaders(callbacks = {}) {
     onChange: (val) => {
       inputGainValue = val;
       if (callbacks.onInputGainChange) callbacks.onInputGainChange(val);
+    },
+    onChangeEnd: (val) => {
+      if (callbacks.onInputGainChangeEnd) callbacks.onInputGainChangeEnd(val);
     }
   });
 
@@ -157,6 +163,9 @@ export function initFaders(callbacks = {}) {
     onChange: (val) => {
       ceilingValueDb = val;
       if (callbacks.onCeilingChange) callbacks.onCeilingChange(val);
+    },
+    onChangeEnd: (val) => {
+      if (callbacks.onCeilingChangeEnd) callbacks.onCeilingChangeEnd(val);
     }
   });
 
@@ -185,6 +194,9 @@ export function initFaders(callbacks = {}) {
         eqValues[stateKey] = val;
         clearActivePreset();
         if (callbacks.onEQChange) callbacks.onEQChange(eqValues);
+      },
+      onChangeEnd: () => {
+        if (callbacks.onEQChangeEnd) callbacks.onEQChangeEnd(eqValues);
       }
     });
   });
